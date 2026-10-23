@@ -1,4 +1,5 @@
 import { app, session, shell, WebContents } from "electron";
+import * as path from "path";
 
 import * as Const from "Const";
 import { logger } from "./Logger";
@@ -141,9 +142,14 @@ export default class Session {
         event.preventDefault();
         return;
       }
-      delete webPreferences.preload;
+      // Theme creator previews: always our own preload (the page passes a cwd-relative
+      // path that never worked in packaged builds), isolated and sandboxed.
+      webPreferences.preload = path.join(__dirname, "..", "renderer", "themePreviewPreload.js");
       webPreferences.nodeIntegration = false;
+      webPreferences.nodeIntegrationInSubFrames = false;
       webPreferences.contextIsolation = true;
+      webPreferences.sandbox = true;
+      delete (params as Record<string, unknown>).preload;
       if (!isFigmaOrigin(params.src)) event.preventDefault();
     });
 
