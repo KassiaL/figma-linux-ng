@@ -40,6 +40,7 @@ export const DEFAULT_SETTINGS: Types.SettingsInterface = {
     lazyRestoreTabs: true,
     webgpuInstrumentation: false,
     registerProtocolHandler: false,
+    fontSource: "local",
   },
   theme: {
     currentTheme: "0",

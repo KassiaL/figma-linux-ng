@@ -567,7 +567,7 @@ export default class WindowManager {
     if (storage.settings.app.disableThemes !== settings.app.disableThemes) {
       app.emit("disableThemesChanged", true);
     }
-    const restartKeys = ["commandSwitches", "gpuProfile", "userAgentOS", "webgpuInstrumentation"] as const;
+    const restartKeys = ["commandSwitches", "gpuProfile", "userAgentOS", "webgpuInstrumentation", "fontSource"] as const;
     if (restartKeys.some((k) => JSON.stringify(storage.settings.app[k]) !== JSON.stringify(settings.app[k]))) {
       app.emit("chromiumFlagsChanged", true);
     }

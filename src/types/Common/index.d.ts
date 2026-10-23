@@ -114,6 +114,7 @@ declare namespace Types {
       lazyRestoreTabs: boolean;
       webgpuInstrumentation: boolean;
       registerProtocolHandler: boolean;
+      fontSource: "local" | "agent";
     };
     ui: {
       scalePanel: number;

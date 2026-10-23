@@ -9,13 +9,27 @@ import { storage } from "./Storage";
 import { isFigmaOrigin, isFigmaHost, parseURL } from "Utils/Common";
 
 // Permissions Figma pages may get without asking. Everything else is denied.
+// Local Network Access: Figma (flag desktop_use_agent) refuses to load any local font
+// file while it is "denied", even when fonts come from the desktop bridge; local
+// plugin dev servers on localhost need it as well.
 const FIGMA_ALLOWED_PERMISSIONS = new Set([
   "clipboard-read",
   "clipboard-sanitized-write",
   "fullscreen",
   "pointerLock",
   "keyboardLock",
+  "local-network-access",
+  "local-network",
+  "loopback-network",
 ]);
+
+// Figma Font Agent endpoints (http://127.0.0.1:44950, https://figmadaemon.com:44960).
+const isFontAgentUrl = (url: string) => {
+  const u = parseURL(url);
+  if (!u) return false;
+  const loopback = u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "[::1]";
+  return (loopback && (u.port === "44950" || u.port === "44960")) || u.hostname === "figmadaemon.com";
+};
 
 const WINDOWS_PLATFORM = "Windows NT 10.0; Win64; x64";
 
@@ -106,6 +120,17 @@ export default class Session {
     });
 
     ses.setUserAgent(buildUserAgent(ses.getUserAgent(), os));
+
+    // Built-in fonts (default): make Figma's Font Agent probe fail fast, so it falls back
+    // to the desktop font API served by Main/Fonts. With fontSource = "agent" Figma talks
+    // to an installed Font Agent as in a browser.
+    const fontSource = cliArg("font-source") ?? storage.settings.app.fontSource ?? "local";
+    if (fontSource !== "agent") {
+      ses.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*"] }, (details, cb) => {
+        cb({ cancel: isFontAgentUrl(details.url) });
+      });
+    }
+    logger.info(`[fonts] source: ${fontSource === "agent" ? "Figma Font Agent" : "built-in scanner"}`);
 
     if (os === "windows") {
       // Keep the UA client hint consistent with the UA string for figma.com requests.

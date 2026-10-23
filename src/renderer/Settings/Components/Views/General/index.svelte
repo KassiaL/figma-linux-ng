@@ -93,6 +93,9 @@
     { id: "software", text: "Software rendering (troubleshooting)" },
   ];
   // userAgentOS is "windows" | "linux"; shown as a switch.
+  function onFontSourceChange(event: Event) {
+    $settings.app.fontSource = (event.target as HTMLInputElement).checked ? "agent" : "local";
+  }
   function onUserAgentChange(event: Event) {
     $settings.app.userAgentOS = (event.target as HTMLInputElement).checked ? "windows" : "linux";
   }
@@ -185,6 +188,11 @@
         text="Windows user agent for figma.com (Font Agent via Wine)"
       />
       <CheckBox bind:checked={$settings.app.lazyRestoreTabs} text="Load restored tabs when first opened" />
+      <CheckBox
+        checked={$settings.app.fontSource === "agent"}
+        on:change={onFontSourceChange}
+        text="Use Figma Font Agent instead of built-in fonts (restart)"
+      />
     </Flex>
   </Flex>
 
