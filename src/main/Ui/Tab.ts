@@ -1,28 +1,62 @@
-import { parse } from "url";
 import {
   app,
-  shell,
   Rectangle,
-  WebContents,
-  BrowserView,
-  BrowserWindow,
+  WebContentsView,
   HandlerDetails,
-  DidCreateWindowDetails,
-  BrowserViewConstructorOptions,
+  WindowOpenHandlerResponse,
 } from "electron";
 
+import { FIGMA_WEB_PREFERENCES } from "Const";
 import { preloadScriptPathDev, preloadScriptPathProd } from "Utils/Main";
 import {
   isDev,
-  isFigmaUrl,
   isValidProjectLink,
   isPrototypeUrl,
   isAppAuthRedeem,
   isFigmaDocLink,
+  isFigmaBoardLink,
+  isFigmaDesignLink,
+  isValidFigjamLink,
+  parseURL,
 } from "Utils/Common";
-import { dialogs } from "Main/Dialogs";
-import { logger } from "Main/Logger";
+import { openExternalSafe } from "Main/Session";
 
+export const isEditorLikeUrl = (url: string) =>
+  isPrototypeUrl(url) ||
+  isValidProjectLink(url) ||
+  isValidFigjamLink(url) ||
+  isFigmaBoardLink(url) ||
+  isFigmaDesignLink(url);
+
+// Google SSO popups must stay in-app (they post the result back to the opener).
+const isSsoPopup = (url: string) => /start_google_sso/.test(url) || /^https:\/\/accounts\.google\.com\//.test(url);
+
+export const figmaWindowOpenHandler = (details: HandlerDetails): WindowOpenHandlerResponse => {
+  const { url } = details;
+
+  if (isEditorLikeUrl(url)) {
+    app.emit("openUrlInNewTab", url);
+    return { action: "deny" };
+  }
+  if (isSsoPopup(url)) {
+    return {
+      action: "allow",
+      overrideBrowserWindowOptions: {
+        autoHideMenuBar: true,
+        webPreferences: { ...FIGMA_WEB_PREFERENCES, preload: undefined },
+      },
+    };
+  }
+
+  openExternalSafe(url);
+  return { action: "deny" };
+};
+
+/**
+ * A Figma file / prototype tab. Hosted in a WebContentsView (BrowserView is
+ * deprecated since Electron 30). Inactive tabs are hidden with setVisible(false),
+ * so Chromium marks them hidden and throttles their rendering and timers.
+ */
 export default class Tab {
   public id: number;
   public title?: string;
@@ -31,47 +65,59 @@ export default class Tab {
   public fileKey?: string;
   public isUsingMicrophone?: boolean;
   public isInVoiceCall?: boolean;
-  public view: BrowserView;
+  public view: WebContentsView;
+  // Restored tabs are created without loading; the page loads on first focus.
+  private pendingUrl?: string;
 
   constructor(private windowId: number) {
     this.initTab();
     this.registerEvents();
   }
 
+  public get isLoaded() {
+    return !this.pendingUrl;
+  }
+
   public loadUrl(url: string) {
     this.url = url;
+    this.pendingUrl = undefined;
     this.view.webContents.loadURL(url);
   }
-  public getUrl() {
-    return this.view.webContents.getURL();
+  public deferUrl(url: string) {
+    this.url = url;
+    this.pendingUrl = url;
   }
-  public setAutosize(flag: boolean) {
-    this.view.setAutoResize({
-      width: flag,
-      height: flag,
-      horizontal: flag,
-      vertical: flag,
-    });
+  public ensureLoaded() {
+    if (this.pendingUrl) {
+      this.loadUrl(this.pendingUrl);
+    }
+  }
+  public getUrl() {
+    return this.pendingUrl ?? this.view.webContents.getURL();
   }
   public setBounds(bounds: Rectangle) {
     this.view.setBounds(bounds);
   }
+  public setVisible(visible: boolean) {
+    this.view.setVisible(visible);
+  }
+  public destroy() {
+    const wc = this.view.webContents;
+
+    if (!wc.isDestroyed()) {
+      wc.close();
+    }
+  }
 
   private initTab() {
-    const options: BrowserViewConstructorOptions = {
+    this.view = new WebContentsView({
       webPreferences: {
-        nodeIntegration: false,
-        webgl: true,
-        contextIsolation: false,
-        zoomFactor: 1,
+        ...FIGMA_WEB_PREFERENCES,
         preload: isDev ? preloadScriptPathDev : preloadScriptPathProd,
       },
-    };
-
-    this.view = new BrowserView(options);
+    });
+    this.view.setVisible(false);
     this.id = this.view.webContents.id;
-
-    this.setAutosize(true);
 
     app.emit("requestBoundsForTabView", this.windowId);
   }
@@ -83,11 +129,11 @@ export default class Tab {
     app.emit("reloadCurrentTheme");
   }
 
-  private onDomReady(event: any) {
+  private onDomReady() {
     this.reloadCurrentTheme();
   }
-  private onMainWindowWillNavigate(event: any, newUrl: string) {
-    const currentUrl = event.sender.getURL();
+  private onWillNavigate(event: Electron.Event, newUrl: string) {
+    const currentUrl = this.view.webContents.getURL();
 
     if (isAppAuthRedeem(newUrl)) {
       return;
@@ -99,121 +145,35 @@ export default class Tab {
     }
 
     if (isFigmaDocLink(newUrl)) {
-      shell.openExternal(newUrl);
+      openExternalSafe(newUrl);
 
       event.preventDefault();
       return;
     }
 
-    const from = parse(currentUrl);
-    const to = parse(newUrl);
+    const from = parseURL(currentUrl);
+    const to = parseURL(newUrl);
 
-    if (from.pathname === "/login") {
-      // TODO:
-      // this.tabManager.reloadAll();
-
+    if (from?.pathname === "/login") {
       event.preventDefault();
       return;
     }
 
-    if (to.pathname === "/logout") {
+    if (to?.pathname === "/logout") {
       app.emit("signOut");
     }
 
-    if (to.search && to.search.match(/[\?\&]redirected=1/)) {
+    if (to?.search && /[?&]redirected=1/.test(to.search)) {
       event.preventDefault();
       return;
     }
   }
-  private onNewWindow(window: BrowserWindow, details: DidCreateWindowDetails) {
-    const url = details.url;
-    logger.debug("newWindow, url: ", url);
-
-    if (/start_google_sso/.test(url)) return;
-
-    if (isPrototypeUrl(url) || isValidProjectLink(url)) {
-      app.emit("openUrlInNewTab", url);
-      return;
-    }
-
-    shell.openExternal(url);
-  }
-
-  private permissionHandler(
-    webContents: WebContents,
-    permission:
-      | "clipboard-read"
-      | "clipboard-sanitized-write"
-      | "display-capture"
-      | "fullscreen"
-      | "geolocation"
-      | "idle-detection"
-      | "media"
-      | "mediaKeySystem"
-      | "midi"
-      | "midiSysex"
-      | "notifications"
-      | "pointerLock"
-      | "openExternal"
-      | "window-management"
-      | "unknown",
-    callback: (permissionGranted: boolean) => void,
-  ) {
-    const allowByDefault = [
-      "fullscreen",
-      "pointerLock",
-      "clipboard-read",
-      "clipboard-write",
-      "clipboard-sanitized-write",
-    ];
-
-    if (allowByDefault.includes(permission)) {
-      return callback(true);
-    }
-
-    if (permission === "media") {
-      if (this.isUsingMicrophone) {
-        return callback(true);
-      }
-
-      const id = dialogs.showMessageBoxSync({
-        type: "question",
-        title: "Figma",
-        message: "Microphone access required for voice call.",
-        detail: `Allow microphone access?`,
-        textOkButton: "Allow",
-        textCancelButton: "Deny",
-        defaultFocusedButton: "Ok",
-      });
-
-      if (id === 0) {
-        this.isUsingMicrophone = true;
-
-        return callback(true);
-      }
-    }
-
-    return callback(false);
-  }
-
-  private windowOpenHandler(details: HandlerDetails) {
-    const { url } = details;
-
-    if (isPrototypeUrl(url) || isValidProjectLink(url)) {
-      app.emit("openUrlInNewTab", url);
-    } else {
-      shell.openExternal(url);
-    }
-
-    return { action: "deny" };
-  }
 
   private registerEvents() {
-    this.view.webContents.setWindowOpenHandler(this.windowOpenHandler.bind(this));
-    this.view.webContents.on("will-navigate", this.onMainWindowWillNavigate.bind(this));
-    this.view.webContents.on("dom-ready", this.onDomReady.bind(this));
-    this.view.webContents.on("did-create-window", this.onNewWindow.bind(this));
+    const wc = this.view.webContents;
 
-    this.view.webContents.session.setPermissionRequestHandler(this.permissionHandler.bind(this));
+    wc.setWindowOpenHandler(figmaWindowOpenHandler);
+    wc.on("will-navigate", this.onWillNavigate.bind(this));
+    wc.on("dom-ready", this.onDomReady.bind(this));
   }
 }

@@ -10,7 +10,7 @@ declare namespace Types {
     isUsingMicrophone?: boolean;
     isInVoiceCall?: boolean;
     loading?: boolean;
-    view: import("electron").BrowserView;
+    view: import("electron").WebContentsView;
   }
 
   type TabIdType = number | "mainTab" | "communityTab";
@@ -29,7 +29,7 @@ declare namespace Types {
 
   interface TabData {
     micAccess: boolean;
-    view: import("electron").BrowserView;
+    view: import("electron").WebContentsView;
   }
 
   interface WindowInitOpts {
@@ -71,6 +71,8 @@ declare namespace Types {
     switch: string;
     value?: string;
   }
+  type GpuProfile = "vulkan" | "angle-vulkan" | "chromium-default" | "software";
+
   interface SettingsInterface {
     clientId: string;
     userId: string;
@@ -104,6 +106,14 @@ declare namespace Types {
       creatorsThemesDropdownOpen: boolean;
       useOldPreviewer: boolean;
       dontShowTutorialCreator: boolean;
+      // Figma Linux NG additions
+      gpuProfile: GpuProfile;
+      enableUnsafeWebGpu: boolean;
+      ozonePlatform: "auto" | "x11" | "wayland";
+      userAgentOS: "windows" | "linux";
+      lazyRestoreTabs: boolean;
+      webgpuInstrumentation: boolean;
+      registerProtocolHandler: boolean;
     };
     ui: {
       scalePanel: number;

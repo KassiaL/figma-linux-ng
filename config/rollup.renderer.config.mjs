@@ -1,25 +1,27 @@
-const path = require("path");
-const svelte = require("rollup-plugin-svelte");
-const commonjs = require("@rollup/plugin-commonjs");
-const resolve = require("@rollup/plugin-node-resolve");
-const livereload = require("rollup-plugin-livereload");
-const dev = require("rollup-plugin-dev");
-const alias = require("@rollup/plugin-alias");
-const terser = require("@rollup/plugin-terser");
-const sveltePreprocess = require("svelte-preprocess");
-const typescript = require("@rollup/plugin-typescript");
-const css = require("rollup-plugin-css-only");
-const copy = require("rollup-plugin-copy");
-const postcss = require("rollup-plugin-postcss");
+import { fileURLToPath } from "url";
+import { spawn } from "child_process";
+import path from "path";
+import svelte from "rollup-plugin-svelte";
+import commonjs from "@rollup/plugin-commonjs";
+import { nodeResolve as resolve } from "@rollup/plugin-node-resolve";
+import livereload from "rollup-plugin-livereload";
+import dev from "rollup-plugin-dev";
+import alias from "@rollup/plugin-alias";
+import terser from "@rollup/plugin-terser";
+import sveltePreprocess from "svelte-preprocess";
+import typescript from "@rollup/plugin-typescript";
+import css from "rollup-plugin-css-only";
+import copy from "rollup-plugin-copy";
+import postcss from "rollup-plugin-postcss";
 
-const dotenv = require("dotenv");
+import dotenv from "dotenv";
 dotenv.config();
 
 const panelPort = process.env.DEV_PANEL_PORT ?? 3330;
 const settingsPort = process.env.DEV_SETTINGS_PORT ?? 3331;
 const production = process.env.NODE_ENV !== "dev";
 const watch = process.env.ROLLUP_WATCH === "true";
-const projectRootDir = path.resolve(__dirname);
+const projectRootDir = path.dirname(fileURLToPath(import.meta.url));
 const commonExternal = ["electron"];
 const commonPlugins = [
   typescript({
@@ -93,7 +95,7 @@ function runElectron() {
   return {
     writeBundle() {
       if (server) return;
-      server = require("child_process").spawn("npm", ["run", "run:watch", "--", "--dev"], {
+      server = spawn("npm", ["run", "run:watch", "--", "--dev"], {
         stdio: ["ignore", "inherit", "inherit"],
         shell: true,
       });
@@ -104,7 +106,7 @@ function runElectron() {
   };
 }
 
-module.exports = [
+export default [
   {
     input: "src/renderer/DesktopAPI/loadContent.ts",
     output: {
@@ -123,6 +125,17 @@ module.exports = [
       format: "cjs",
       name: "app",
       file: "dist/renderer/loadMainContent.js",
+    },
+    external: commonExternal,
+    plugins: [...commonPlugins, production && terser()],
+  },
+  {
+    input: "src/renderer/Diagnostics/preload.ts",
+    output: {
+      sourcemap: !production,
+      format: "cjs",
+      name: "app",
+      file: "dist/renderer/diagnosticsPreload.js",
     },
     external: commonExternal,
     plugins: [...commonPlugins, production && terser()],
@@ -196,7 +209,7 @@ module.exports = [
             dest: "dist",
           },
           {
-            src: "src/themeCreator.html",
+            src: "src/diagnostics.html",
             dest: "dist",
           },
         ],

@@ -1,28 +1,15 @@
-import {
-  app,
-  shell,
-  BrowserView,
-  BrowserViewConstructorOptions,
-  Rectangle,
-  HandlerDetails,
-} from "electron";
+import { app, Rectangle, WebContentsView, HandlerDetails } from "electron";
 
+import { FIGMA_WEB_PREFERENCES } from "Const";
 import { preloadScriptPathDev, preloadScriptPathProd, toggleDetachedDevTools } from "Utils/Main";
-import {
-  isDev,
-  isValidProjectLink,
-  isPrototypeUrl,
-  isRecentFilesLink,
-  isFigmaUrl,
-  isValidFigjamLink,
-} from "Utils/Common";
+import { isDev, isValidProjectLink, isPrototypeUrl, isRecentFilesLink, isFigmaUrl, isValidFigjamLink } from "Utils/Common";
 import { storage } from "Main/Storage";
-import { logger } from "Main/Logger";
+import { openExternalSafe } from "Main/Session";
 
 export default class CommunityTab {
   public userId: string;
   public id: number;
-  public view: BrowserView;
+  public view: WebContentsView;
 
   constructor(private windowId: number) {
     this.userId = storage.settings.userId;
@@ -37,33 +24,26 @@ export default class CommunityTab {
   public getUrl() {
     return this.view.webContents.getURL();
   }
-  public setAutosize(flag: boolean) {
-    this.view.setAutoResize({
-      width: flag,
-      height: flag,
-      horizontal: flag,
-      vertical: flag,
-    });
-  }
   public setBounds(bounds: Rectangle) {
     this.view.setBounds(bounds);
   }
+  public setVisible(visible: boolean) {
+    this.view.setVisible(visible);
+  }
+  public destroy() {
+    if (!this.view.webContents.isDestroyed()) {
+      this.view.webContents.close();
+    }
+  }
 
   private initTab() {
-    const options: BrowserViewConstructorOptions = {
+    this.view = new WebContentsView({
       webPreferences: {
-        nodeIntegration: false,
-        webgl: true,
-        contextIsolation: false,
-        zoomFactor: 1,
+        ...FIGMA_WEB_PREFERENCES,
         preload: isDev ? preloadScriptPathDev : preloadScriptPathProd,
       },
-    };
-
-    this.view = new BrowserView(options);
+    });
     this.id = this.view.webContents.id;
-
-    this.setAutosize(true);
 
     isDev && toggleDetachedDevTools(this.view.webContents);
 
@@ -80,7 +60,7 @@ export default class CommunityTab {
     this.view.webContents.send("loadCurrentTheme", theme);
   }
 
-  private onCommunityTabWillNavigate(event: Event, url: string) {
+  private onWillNavigate(event: Electron.Event, url: string) {
     if (isFigmaUrl(url) && !isRecentFilesLink(url)) {
       return;
     }
@@ -92,27 +72,26 @@ export default class CommunityTab {
       return;
     }
 
-    shell.openExternal(url);
-  }
-  private onDomReady(event: any) {
-    this.reloadCurrentTheme();
+    openExternalSafe(url);
   }
   private windowOpenHandler(details: HandlerDetails) {
     const url = details.url;
 
     if (isPrototypeUrl(url) || isValidProjectLink(url) || isValidFigjamLink(url)) {
       app.emit("openUrlFromCommunity", url);
-      return { action: "deny" };
+      return { action: "deny" as const };
     }
 
-    shell.openExternal(url);
+    openExternalSafe(url);
 
-    return { action: "deny" };
+    return { action: "deny" as const };
   }
 
   private registerEvents() {
-    this.view.webContents.setWindowOpenHandler(this.windowOpenHandler.bind(this));
-    this.view.webContents.on("will-navigate", this.onCommunityTabWillNavigate.bind(this));
-    this.view.webContents.on("dom-ready", this.onDomReady.bind(this));
+    const wc = this.view.webContents;
+
+    wc.setWindowOpenHandler(this.windowOpenHandler.bind(this));
+    wc.on("will-navigate", this.onWillNavigate.bind(this));
+    wc.on("dom-ready", () => this.reloadCurrentTheme());
   }
 }

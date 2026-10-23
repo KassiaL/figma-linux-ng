@@ -1,9 +1,7 @@
-import { parse } from "url";
-import { app, BrowserWindow, IpcMainEvent, Rectangle, Menu } from "electron";
+import { app, BrowserWindow, IpcMainEvent, Rectangle, Menu, View } from "electron";
 import { storage } from "Main/Storage";
 import SettingsView from "./SettingsView";
 import TabManager from "./TabManager";
-import { logger } from "../Logger";
 
 import {
   HOMEPAGE,
@@ -12,15 +10,20 @@ import {
   NEW_PROJECT_TAB_URL,
   NEW_FILE_TAB_TITLE,
 } from "Const";
-import { isDev, isCommunityUrl, isAppAuthRedeem, normalizeUrl, parseURL } from "Utils/Common";
+import { isDev, isCommunityUrl, isAppAuthRedeem, normalizeUrl, parseURL, urlPath } from "Utils/Common";
 import { panelUrlDev, panelUrlProd, toggleDetachedDevTools } from "Utils/Main";
 import Tab from "./Tab";
+
+let quitting = false;
+app.on("before-quit", () => (quitting = true));
 
 export default class Window {
   private window: BrowserWindow;
   private tabManager: TabManager;
   private settingsView: SettingsView;
   private state: Types.WindowState;
+  private activeView: View | undefined;
+  private boundsTimer: NodeJS.Timeout | undefined;
 
   private _userId: string;
 
@@ -30,8 +33,8 @@ export default class Window {
     this.settingsView = new SettingsView();
     this.state = state;
 
-    this.window.addBrowserView(this.tabManager.mainTab.view);
-    this.window.setTopBrowserView(this.tabManager.mainTab.view);
+    this.attachView(this.tabManager.mainTab.view);
+    this.showView(this.tabManager.mainTab.view);
 
     this.registerEvents();
 
@@ -58,9 +61,7 @@ export default class Window {
   public get communityTabInfo() {
     return {
       id: this.tabManager.communityTab ? this.tabManager.communityTab.id : -1,
-      url: this.tabManager.communityTab
-        ? this.tabManager.communityTab.view.webContents.getURL()
-        : "",
+      url: this.tabManager.communityTab ? this.tabManager.communityTab.view.webContents.getURL() : "",
     };
   }
   public get tabs() {
@@ -83,6 +84,37 @@ export default class Window {
 
     return [...ids];
   }
+  /** webContents of every Figma view in this window, for diagnostics. */
+  public get figmaWebContents() {
+    return this.tabManager.allViews().map((v) => v.webContents);
+  }
+
+  // --- view management (WebContentsView) ---------------------------------
+  // All tab views stay attached to the window; only the active one is visible.
+  // A hidden WebContentsView reports document.visibilityState === "hidden", so
+  // Chromium throttles rAF/timers and Figma stops drawing background tabs.
+  private attachView(view: View) {
+    if (!this.window.contentView.children.includes(view)) {
+      view.setVisible(false);
+      this.window.contentView.addChildView(view);
+    }
+  }
+  private detachView(view: View) {
+    if (this.activeView === view) this.activeView = undefined;
+    if (this.window.contentView.children.includes(view)) {
+      this.window.contentView.removeChildView(view);
+    }
+  }
+  private showView(view: View) {
+    this.attachView(view);
+    view.setBounds(this.calcBoundsForTabView());
+
+    if (this.activeView && this.activeView !== view) {
+      this.activeView.setVisible(false);
+    }
+    view.setVisible(true);
+    this.activeView = view;
+  }
 
   public setUserId(id: string) {
     this._userId = id;
@@ -101,7 +133,7 @@ export default class Window {
       });
     }
 
-    const bounds = this.window.getBounds();
+    const bounds = this.window.getNormalBounds();
 
     return {
       ...bounds,
@@ -113,6 +145,11 @@ export default class Window {
       tabs,
     };
   }
+  /**
+   * Restores saved tabs. With lazyRestoreTabs (default) only the previously active
+   * tab loads immediately; the others load when first focused. Opening a dozen
+   * heavy Figma files at once was the main cause of slow startup and RAM spikes.
+   */
   public restoreTabs(list?: Types.SavedTab[]) {
     const tabs =
       list ??
@@ -122,28 +159,31 @@ export default class Window {
         }
       )[this.id];
 
-    if (!tabs) {
+    if (!tabs || !tabs.length) {
       return;
     }
 
-    setTimeout(() => {
-      tabs.forEach((tab, i) => {
-        setTimeout(() => {
-          this.addTab(tab.url, tab.title);
-          if (i + 1 === tabs.length) {
-            this.setTabFocusByPath(this.state.lastActiveTabPath);
-          }
-        }, 300 * i);
-      });
-    }, 100);
+    const lazy = storage.settings.app.lazyRestoreTabs !== false;
+    const activePath = this.state.lastActiveTabPath;
+
+    for (const saved of tabs) {
+      const isActive = !!activePath && urlPath(saved.url).startsWith(activePath);
+      this.addTab(saved.url, saved.title, lazy && !isActive);
+    }
+
+    if (activePath) {
+      this.setTabFocusByPath(activePath);
+    }
   }
   public calcBoundsForTabView(): Rectangle {
     const panelHeight = storage.settings.app.panelHeight;
+    const { width, height } = this.window.getContentBounds();
+
     return {
       x: 0,
       y: panelHeight,
-      width: this.window.getContentBounds().width,
-      height: this.window.getContentBounds().height - panelHeight,
+      width,
+      height: Math.max(0, height - panelHeight),
     };
   }
 
@@ -182,15 +222,18 @@ export default class Window {
 
       this.tabManager.loadUrlInMainTab(normalizedUrl);
     } else if (isCommunityUrl(url)) {
-      this.handleUrl(parse(url).path);
+      this.handleUrl(urlPath(url));
       this.setFocusToMainTab();
-    } else if (/figma:\/\//.test(url)) {
-      this.addTab(url.replace(/figma:\//, HOMEPAGE));
-    } else if (/https?:\/\//.test(url)) {
-      this.addTab(url);
+    } else if (/^figma:\/\//.test(url)) {
+      const tab = this.addTab(url.replace(/^figma:\//, HOMEPAGE));
+      this.setTabFocus(tab.id);
+    } else if (/^https?:\/\//.test(url)) {
+      const tab = this.addTab(url);
+      this.setTabFocus(tab.id);
     }
   }
   public focus() {
+    if (this.window.isMinimized()) this.window.restore();
     this.window.focus();
   }
   public showHandler(event: IpcMainEvent) {
@@ -219,18 +262,21 @@ export default class Window {
     return this.window.getBounds();
   }
   public updateTabsBounds() {
+    if (this.window.isDestroyed()) return;
     const bounds = this.calcBoundsForTabView();
 
     this.tabManager.setBoundsForAllTab(bounds);
+    if (this.window.contentView.children.includes(this.settingsView.view)) {
+      this.settingsView.updateProps(this.window.getContentBounds());
+    }
   }
   public closeAllTab(_: IpcMainEvent) {
-    const tabs = this.tabManager.getAll();
-
-    for (const [_, tab] of tabs) {
-      this.window.removeBrowserView(tab.view);
+    for (const [_, tab] of this.tabManager.getAll()) {
+      this.detachView(tab.view);
     }
 
     this.tabManager.closeAll();
+    this.showView(this.tabManager.mainTab.view);
 
     this.window.webContents.send("closeAllTab");
   }
@@ -246,7 +292,8 @@ export default class Window {
       return;
     }
 
-    this.addTab(`${NEW_PROJECT_TAB_URL}?fuid=${this._userId}`, NEW_FILE_TAB_TITLE);
+    const tab = this.addTab(`${NEW_PROJECT_TAB_URL}?fuid=${this._userId}`, NEW_FILE_TAB_TITLE);
+    this.setTabFocus(tab.id);
 
     this.window.webContents.send("newFileBtnVisible", false);
   }
@@ -254,9 +301,10 @@ export default class Window {
     const newFileTab = this.tabManager.getByTitle(NEW_FILE_TAB_TITLE);
     const tab = this.addTab(args.url);
 
-    tab.loadUrl(args.url);
-    this.closeTab(newFileTab.id);
-    this.tabWasClosed(newFileTab.id);
+    if (newFileTab) {
+      this.closeTab(newFileTab.id);
+      this.tabWasClosed(newFileTab.id);
+    }
 
     this.window.webContents.send("newFileBtnVisible", true);
 
@@ -266,7 +314,7 @@ export default class Window {
   }
   public openMainMenuCloseHandler() {
     setTimeout(() => {
-      this.window.webContents.send("isMainMenuOpen", false);
+      if (!this.window.isDestroyed()) this.window.webContents.send("isMainMenuOpen", false);
     }, 150);
   }
   public hasWebContentId(webContentsId: number) {
@@ -284,11 +332,13 @@ export default class Window {
     };
   }
 
-  public addTab(url: string, title?: string) {
+  public addTab(url: string, title?: string, lazy = false) {
     const parsedUrl = parseURL(url);
-    parsedUrl.searchParams.set("fuid", this._userId);
+    if (parsedUrl && this._userId) parsedUrl.searchParams.set("fuid", this._userId);
 
-    const tab = this.tabManager.addTab(parsedUrl.toString(), title);
+    const tab = this.tabManager.addTab(parsedUrl ? parsedUrl.toString() : url, title, lazy);
+    this.attachView(tab.view);
+    tab.setBounds(this.calcBoundsForTabView());
 
     this.window.webContents.send("didTabAdd", {
       id: tab.id,
@@ -300,16 +350,14 @@ export default class Window {
   }
 
   public openSettingsView() {
-    const bounds = this.window.getBounds();
+    const bounds = this.window.getContentBounds();
     this.settingsView.updateProps(bounds);
 
-    this.window.addBrowserView(this.settingsView.view);
+    // Added last, so it is the topmost child view (above the active tab).
+    this.window.contentView.addChildView(this.settingsView.view);
+    this.settingsView.view.setVisible(true);
 
     isDev && toggleDetachedDevTools(this.settingsView.view.webContents);
-
-    setTimeout(() => {
-      this.settingsView.updateProps(bounds);
-    }, 100);
   }
   public closeSettingsView() {
     if (!this.settingsView.view) {
@@ -318,16 +366,12 @@ export default class Window {
 
     this.settingsView.closeDevTools();
 
-    this.window.removeBrowserView(this.settingsView.view);
+    this.detachView(this.settingsView.view);
 
     this.settingsView.postClose();
   }
   public toggleFullScreen() {
-    if (this.window.isFullScreen()) {
-      this.window.setFullScreen(false);
-    } else {
-      this.window.setFullScreen(true);
-    }
+    this.window.setFullScreen(!this.window.isFullScreen());
   }
   private onEnterFullScreen() {
     const tab = this.tabManager.getById(this.tabManager.lastFocusedTab);
@@ -351,15 +395,19 @@ export default class Window {
       this.window.webContents.once("did-finish-load", () => this.restoreTabs(tabs));
     }
 
-    this.win.setBounds({ x, y, width, height });
-
-    if (isMaximized) {
-      this.win.maximize();
+    if (x !== -1 && y !== -1) {
+      this.win.setBounds({ x, y, width, height });
+    } else {
+      this.win.setSize(width, height);
     }
+
+    this.window.once("ready-to-show", () => {
+      isMaximized ? this.window.maximize() : this.window.show();
+    });
   }
-  private loadCurrentTheme(theme: Themes.Theme) {
-    this.window.webContents.send("loadCurrentTheme", theme);
-  }
+  private loadCurrentTheme = (theme: Themes.Theme) => {
+    if (!this.window.isDestroyed()) this.window.webContents.send("loadCurrentTheme", theme);
+  };
   public setLoading(event: IpcMainEvent, args: WebApi.SetLoading) {
     const tabId = event.sender.id;
     const tab = this.tabManager.getById(tabId);
@@ -370,7 +418,7 @@ export default class Window {
 
     this.window.webContents.send("setLoading", tabId, args.loading);
   }
-  public windowMinimize(event: IpcMainEvent) {
+  public windowMinimize(_: IpcMainEvent) {
     this.window.minimize();
   }
   public windowMaimize(event: IpcMainEvent) {
@@ -394,7 +442,9 @@ export default class Window {
       });
     }
 
-    this.setFocusToMainTab();
+    if (!this.state.lastActiveTabPath || !this.state.tabs?.length) {
+      this.setFocusToMainTab();
+    }
   }
   public setMenu(menu: Menu) {
     this.window.setMenu(menu);
@@ -427,17 +477,14 @@ export default class Window {
     const tab = this.tabManager.getById(tabId);
     const isNewFileTab = this.tabManager.isNewFileTab(tabId);
 
-    this.window.removeBrowserView(tab.view);
+    this.detachView(tab.view);
 
     const nextTabId = this.tabManager.close(tabId);
 
     if (this.tabManager.lastFocusedTab === tabId) {
       if (isNewFileTab) {
-        this.tabManager.hasOpenedCommunityTab
-          ? this.setFocusToCommunityTab()
-          : this.setFocusToMainTab();
+        this.tabManager.hasOpenedCommunityTab ? this.setFocusToCommunityTab() : this.setFocusToMainTab();
       } else {
-        this.tabManager.focusTab(nextTabId);
         this.window.webContents.send("focusTab", nextTabId);
 
         switch (nextTabId) {
@@ -469,12 +516,7 @@ export default class Window {
   public setFocusToMainTab() {
     const mainTab = this.tabManager.mainTab;
 
-    try {
-      this.window.setTopBrowserView(mainTab.view);
-    } catch (error) {
-      this.window.addBrowserView(mainTab.view);
-      this.window.setTopBrowserView(mainTab.view);
-    }
+    this.showView(mainTab.view);
     this.tabManager.focusMainTab();
     this.closeNewFileTab();
     this.window.webContents.send("focusTab", "mainTab");
@@ -482,18 +524,16 @@ export default class Window {
     app.emit("needUpdateMenu", this.id, null, { "close-tab": false });
   }
   public setFocusToCommunityTab() {
-    const bounds = this.calcBoundsForTabView();
     const communityTab = this.tabManager.communityTab;
 
-    try {
-      this.window.setTopBrowserView(communityTab.view);
-    } catch (error) {
-      this.window.addBrowserView(communityTab.view);
-      this.window.setTopBrowserView(communityTab.view);
+    if (!communityTab) {
+      this.setFocusToMainTab();
+      return;
     }
+
+    this.showView(communityTab.view);
     this.tabManager.focusCommunityTab();
     this.closeNewFileTab();
-    this.tabManager.communityTab.setBounds(bounds);
     this.window.webContents.send("focusTab", "communityTab");
 
     app.emit("needUpdateMenu", this.id, null, { "close-tab": true });
@@ -508,7 +548,7 @@ export default class Window {
         this.setFocusToMainTab();
         this.tabManager.loadUrlInMainTab(`${HOMEPAGE}${path}`);
       }
-      if (/community/.test(path)) {
+      if (/community/.test(path) && this.tabManager.communityTab) {
         this.setFocusToCommunityTab();
         this.tabManager.loadUrlInCommunityTab(`${HOMEPAGE}${path}`);
       }
@@ -518,18 +558,10 @@ export default class Window {
     this.tabManager.mainTab.loadUrl(url);
   }
   public setTabFocus(tabId: number) {
-    const bounds = this.calcBoundsForTabView();
     const tab = this.tabManager.getById(tabId);
 
-    try {
-      this.window.setTopBrowserView(tab.view);
-    } catch (error) {
-      this.window.addBrowserView(tab.view);
-      this.window.setTopBrowserView(tab.view);
-    }
-
     this.tabManager.focusTab(tabId);
-    this.tabManager.setBounds(tabId, bounds);
+    this.showView(tab.view);
     this.window.webContents.send("focusTab", tabId);
 
     app.emit("needUpdateMenu", this.id, tabId, { "close-tab": true });
@@ -551,10 +583,13 @@ export default class Window {
       url = `${url}${args[2]}`;
     }
 
-    this.addTab(url);
+    const tab = this.addTab(url);
+    this.setTabFocus(tab.id);
   }
   public closeCommunityTab() {
-    this.window.removeBrowserView(this.tabManager.communityTab.view);
+    if (this.tabManager.communityTab) {
+      this.detachView(this.tabManager.communityTab.view);
+    }
     this.tabManager.closeCommunityTab();
     this.setFocusToMainTab();
 
@@ -562,19 +597,15 @@ export default class Window {
     this.window.webContents.send("communityTabWasClose");
   }
   public openCommunity(args: WebApi.OpenCommunity) {
-    const alreadyOpen = this.tabManager.hasOpenedCommunityTab;
-    const bounds = this.calcBoundsForTabView();
+    const alreadyOpen = this.tabManager.hasOpenedCommunityTab && this.tabManager.communityTab;
     const url = `${HOMEPAGE}${args.path}?fuid=${args.userId}`;
 
     if (!alreadyOpen) {
       this.tabManager.addCommunityTab();
       this.tabManager.communityTab.userId = args.userId;
       this.tabManager.communityTab.loadUrl(url);
-      this.window.addBrowserView(this.tabManager.communityTab.view);
+      this.attachView(this.tabManager.communityTab.view);
     }
-
-    this.window.setTopBrowserView(this.tabManager.communityTab.view);
-    this.tabManager.communityTab.setBounds(bounds);
 
     this.window.webContents.send("openCommunity");
     this.tabManager.hasOpenedCommunityTab = true;
@@ -599,21 +630,42 @@ export default class Window {
     this.showHandler(null);
   }
 
+  /** Close the window and release every webContents and listener it owns. */
   public close() {
-    this.window.close();
+    app.removeListener("loadCurrentTheme", this.loadCurrentTheme);
+    clearTimeout(this.boundsTimer);
+
+    this.tabManager.dispose();
+    this.settingsView.dispose();
+
+    if (!this.window.isDestroyed()) {
+      this.window.destroy();
+    }
   }
 
+  private scheduleBoundsUpdate = () => {
+    clearTimeout(this.boundsTimer);
+    this.boundsTimer = setTimeout(() => this.updateTabsBounds(), 50);
+  };
+
   private registerEvents() {
-    app.on("loadCurrentTheme", this.loadCurrentTheme.bind(this));
+    app.on("loadCurrentTheme", this.loadCurrentTheme);
 
     this.window.on("show", this.showHandler.bind(this));
-    this.window.on("resize", this.updateTabsBounds.bind(this));
-    this.window.on("maximize", () => setTimeout(this.updateTabsBounds.bind(this), 100));
-    this.window.on("unmaximize", () => setTimeout(this.updateTabsBounds.bind(this), 100));
-    this.window.on("move", () => setTimeout(this.updateTabsBounds.bind(this), 100));
-    this.window.on("focus", () => app.emit("windowFocus", this.window.id));
+    this.window.on("resize", () => this.updateTabsBounds());
+    this.window.on("maximize", this.scheduleBoundsUpdate);
+    this.window.on("unmaximize", this.scheduleBoundsUpdate);
     this.window.on("enter-full-screen", this.onEnterFullScreen.bind(this));
     this.window.on("leave-full-screen", this.onLeaveFullScreen.bind(this));
+    this.window.on("enter-full-screen", this.scheduleBoundsUpdate);
+    this.window.on("leave-full-screen", this.scheduleBoundsUpdate);
+    this.window.on("focus", () => app.emit("windowFocus", this.window.id));
+    // Window manager close button / Alt+F4 / "Close window" go through the same cleanup.
+    this.window.on("close", (event) => {
+      if (quitting) return;
+      event.preventDefault();
+      app.emit("windowClose", this.window.id);
+    });
 
     this.window.webContents.on("did-finish-load", this.webContentDidFinishLoad.bind(this));
   }

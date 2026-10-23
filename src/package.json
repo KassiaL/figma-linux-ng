@@ -1,16 +1,15 @@
 {
-  "name": "figma-linux",
-  "version": "0.11.4",
-  "description": "Figma is the first interface design tool based in the browser, making it easier for teams to create software. Join as in Telegram: https://t.me/figma_linux",
+  "name": "figma-linux-ng",
+  "version": "0.12.0-ng.1",
+  "description": "Figma Linux NG: modernized fork of Figma Linux (Electron 45, hardware WebGPU on Linux/Vulkan, diagnostics)",
   "main": "main/main.js",
-  "repository": "git@github.com:ChugunovRoman/figma-linux.git",
-  "homepage": "https://github.com/ChugunovRoman/figma-linux",
+  "repository": "https://github.com/Figma-Linux/figma-linux",
+  "homepage": "https://github.com/Figma-Linux/figma-linux",
   "author": "ChugunovRoman <Zebs-BMK@yandex.ru>",
   "license": "MIT",
   "dependencies": {
-    "adm-zip": "^0.5.10",
-    "chokidar": "^3.5.3",
-    "css-vars": "^2.4.0",
-    "electron-build-env": "^0.2"
-  }
+    "adm-zip": "^0.5.16",
+    "chokidar": "^3.6.0"
+  },
+  "productName": "Figma Linux NG"
 }

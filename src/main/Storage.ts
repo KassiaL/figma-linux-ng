@@ -1,9 +1,8 @@
-import { app, ipcMain, IpcMainEvent, ipcRenderer } from "electron";
+import { app, ipcMain, IpcMainEvent } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 
 import { DEFAULT_SETTINGS, accessSync } from "Utils/Main";
-import { logger } from "./Logger";
 
 /**
  * This class has dual initialization: in main process and renderer process
@@ -55,15 +54,19 @@ export class Storage {
     try {
       settings = JSON.parse(content);
     } catch (error) {
-      logger.error("Parse settings.json file error: ", error);
-      logger.warn("Apply default settings instead file settings.");
+      // No Logger here: Logger reads its level from Storage (avoids an import cycle).
+      console.error("Parse settings.json file error, defaults applied: ", error);
       settings = DEFAULT_SETTINGS;
     }
 
     return settings;
   };
+  // Write to a temp file and rename, so a crash mid-write never leaves a truncated settings.json.
   private writeSync = (settings: Types.SettingsInterface): void => {
-    fs.writeFileSync(this.filePath, JSON.stringify(settings, null, 2));
+    const tmp = `${this.filePath}.tmp`;
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    fs.writeFileSync(tmp, JSON.stringify(settings, null, 2));
+    fs.renameSync(tmp, this.filePath);
   };
 
   public save() {

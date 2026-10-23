@@ -1,7 +1,7 @@
-import * as URL from "url";
 import { app, ipcMain, Rectangle, IpcMainEvent } from "electron";
 
 import { NEW_FILE_TAB_TITLE, RECENT_FILES } from "Const";
+import { urlPathname } from "Utils/Common";
 import MainTab from "./MainTab";
 import CommunityTab from "./CommunityTab";
 import Tab from "./Tab";
@@ -30,14 +30,23 @@ export default class TabManager {
     this.registerEvents();
   }
 
+  /** Every view of this window (main tab first). */
+  public allViews() {
+    const views = [this.mainTab.view, ...[...this.tabs.values()].map((t) => t.view)];
+
+    if (this.communityTab) views.push(this.communityTab.view);
+
+    return views;
+  }
+
   public setUserId(id: string) {
     this.mainTab.setUserId(id);
   }
-  public addTab(url = RECENT_FILES, title?: string): Tab {
+  public addTab(url = RECENT_FILES, title?: string, lazy = false): Tab {
     const tab = new Tab(this.windowId);
 
     tab.title = title;
-    tab.loadUrl(url);
+    lazy ? tab.deferUrl(url) : tab.loadUrl(url);
     this.tabs.set(tab.id, tab);
 
     if (title === NEW_FILE_TAB_TITLE) {
@@ -51,10 +60,7 @@ export default class TabManager {
     this.communityTab = new CommunityTab(this.windowId);
   }
   public closeCommunityTab() {
-    if (this.communityTab.view.webContents && !this.communityTab.view.webContents.isDestroyed()) {
-      this.communityTab.view.webContents.destroy();
-    }
-
+    this.communityTab?.destroy();
     this.communityTab = undefined;
   }
   public handleCallbackForTab(webContentsId: number, callbackID: number, args: any) {
@@ -63,8 +69,23 @@ export default class TabManager {
     tab.view.webContents.send("handleCallback", callbackID, args);
   }
 
+  // Previously this only cleared the map and left every tab's renderer process running.
   public closeAll() {
+    for (const tab of this.tabs.values()) {
+      tab.destroy();
+    }
     this.tabs.clear();
+    this.hasOpenedNewFileTab = false;
+  }
+
+  /** Called when the window closes: release every webContents and global listener. */
+  public dispose() {
+    this.closeAll();
+    this.closeCommunityTab();
+    this.mainTab.destroy();
+
+    ipcMain.removeListener("changeTheme", this.changeTheme);
+    app.removeListener("loadCurrentTheme", this.loadCurrentTheme);
   }
   public close(tabId: number): Types.TabIdType {
     const tab = this.tabs.get(tabId);
@@ -86,9 +107,7 @@ export default class TabManager {
       nextTabId = tab[0];
     }
 
-    if (tab.view.webContents && !tab.view.webContents.isDestroyed()) {
-      tab.view.webContents.destroy();
-    }
+    tab.destroy();
     if (tab.title === NEW_FILE_TAB_TITLE) {
       this.hasOpenedNewFileTab = false;
     }
@@ -103,9 +122,7 @@ export default class TabManager {
   }
 
   public reloadAll() {
-    this.tabs.forEach((t) =>
-      !t.view.webContents.isDestroyed() ? t.view.webContents.reload() : "",
-    );
+    this.tabs.forEach((t) => (t.isLoaded && !t.view.webContents.isDestroyed() ? t.view.webContents.reload() : ""));
   }
   public updateScaleAll(scale: number) {
     this.mainTab.updateScale(scale);
@@ -145,6 +162,10 @@ export default class TabManager {
   public reloadTab(tabId: number) {
     const tab = this.getById(tabId);
 
+    if (tab instanceof Tab && !tab.isLoaded) {
+      tab.ensureLoaded();
+      return;
+    }
     tab.view.webContents.reload();
   }
   public loadUrlInMainTab(url: string) {
@@ -175,7 +196,7 @@ export default class TabManager {
           return this.tabs.get(id);
         } else if (this.mainTab.id === id) {
           return this.mainTab;
-        } else if (this.communityTab.id === id) {
+        } else if (this.communityTab?.id === id) {
           return this.communityTab;
         }
       }
@@ -198,7 +219,7 @@ export default class TabManager {
     let foundTab: Tab | undefined;
 
     this.tabs.forEach((tab) => {
-      const pathname = URL.parse(tab.url ?? tab.getUrl()).pathname;
+      const pathname = urlPathname(tab.url ?? tab.getUrl());
       const reg = new RegExp(pathname);
       if (reg.test(path)) {
         foundTab = tab;
@@ -212,6 +233,9 @@ export default class TabManager {
   public focusTab(id: Types.TabIdType) {
     const tab = this.getById(id);
 
+    if (tab instanceof Tab) {
+      tab.ensureLoaded();
+    }
     this.lastFocusedTab = tab.id;
   }
   public setTitle(id: number, title: string) {
@@ -251,14 +275,16 @@ export default class TabManager {
     for (const tab of tabs) {
       const needed = entries.find(([_, t]) => t.id === tab.id);
 
-      this.tabs.set(needed[0], needed[1]);
+      needed && this.tabs.set(needed[0], needed[1]);
+    }
+    // Tabs the panel did not report keep their place at the end.
+    for (const [id, tab] of entries) {
+      if (!this.tabs.has(id)) this.tabs.set(id, tab);
     }
   }
 
   public getTabUrl(tabId: number) {
-    const tab = this.tabs.get(tabId);
-
-    return tab.view.webContents.getURL();
+    return this.tabs.get(tabId)?.getUrl();
   }
 
   public isNewFileTab(tabId: number) {
@@ -288,25 +314,24 @@ export default class TabManager {
 
   public getActiveTabPath(): string {
     const tab = this.getById(this.lastFocusedTab);
-    const tabUri = tab.view.webContents.getURL();
 
-    return URL.parse(tabUri).pathname;
+    return urlPathname(tab.getUrl());
   }
 
-  private loadCurrentTheme(theme: Themes.Theme) {
+  private loadCurrentTheme = (theme: Themes.Theme) => {
     this.mainTab.loadTheme(theme);
     this.communityTab && this.communityTab.loadTheme(theme);
-    this.tabs.forEach((t) => t.view.webContents.send("loadCurrentTheme", theme));
-  }
-  private changeTheme(_: IpcMainEvent, theme: Themes.Theme) {
+    this.tabs.forEach((t) => t.isLoaded && t.view.webContents.send("loadCurrentTheme", theme));
+  };
+  private changeTheme = (_: IpcMainEvent, theme: Themes.Theme) => {
     this.loadCurrentTheme(theme);
 
     storage.settings.theme.currentTheme = theme.id;
-  }
+  };
 
   private registerEvents() {
-    ipcMain.on("changeTheme", this.changeTheme.bind(this));
+    ipcMain.on("changeTheme", this.changeTheme);
 
-    app.on("loadCurrentTheme", this.loadCurrentTheme.bind(this));
+    app.on("loadCurrentTheme", this.loadCurrentTheme);
   }
 }

@@ -6,7 +6,7 @@ import { dialogs } from "Main/Dialogs";
 import { storage } from "Main/Storage";
 import { logger } from "Main/Logger";
 
-import { DEFAULT_THEME, TEST_THEME_ID, DOWNLOAD_ZIP_URI, DOWNLOAD_ZIP_PATH } from "Const";
+import { DEFAULT_THEME, TEST_THEME_ID, DOWNLOAD_ZIP_URI } from "Const";
 import { keysToCamelCase, keysToKebabCase } from "Utils/Common";
 import { mkPath, access, downloadFile } from "Utils/Main";
 import ThemeValidator from "./ThemeValidator";
@@ -115,6 +115,8 @@ export default class ThemeManager {
   }
 
   public async syncThemesFromRepository() {
+    // Private per-profile location instead of a fixed /tmp/master.zip shared with other users/clients.
+    const DOWNLOAD_ZIP_PATH = path.join(app.getPath("userData"), "themes-download.zip");
     await downloadFile(DOWNLOAD_ZIP_URI, DOWNLOAD_ZIP_PATH);
 
     const zip = new Azip(DOWNLOAD_ZIP_PATH);

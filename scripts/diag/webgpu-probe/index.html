@@ -1,0 +1,53 @@
+<!doctype html><html><head><meta charset="utf-8"><title>WebGPU probe</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'"></head>
+<body style="margin:0;background:#222;color:#eee;font:12px monospace">
+<canvas id="c" width="256" height="256"></canvas><pre id="o"></pre>
+<script>
+(async () => {
+  const r = { hasGpu: "gpu" in navigator };
+  try {
+    if (!r.hasGpu) throw new Error("navigator.gpu missing");
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+    r.adapter = !!adapter;
+    if (!adapter) throw new Error("requestAdapter() returned null");
+    const info = adapter.info || {};
+    r.adapterInfo = { vendor: info.vendor, architecture: info.architecture, device: info.device,
+      description: info.description, isFallbackAdapter: info.isFallbackAdapter ?? adapter.isFallbackAdapter,
+      subgroupMinSize: info.subgroupMinSize, subgroupMaxSize: info.subgroupMaxSize };
+    r.features = [...adapter.features].sort();
+    r.limits = { maxTextureDimension2D: adapter.limits.maxTextureDimension2D, maxBufferSize: adapter.limits.maxBufferSize,
+      maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize };
+    const device = await adapter.requestDevice();
+    r.device = !!device;
+    device.lost.then((l) => { r.lost = l.reason; });
+    const fmt = navigator.gpu.getPreferredCanvasFormat();
+    r.preferredFormat = fmt;
+    const ctx = document.getElementById("c").getContext("webgpu");
+    ctx.configure({ device, format: fmt, alphaMode: "opaque", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+    const mod = device.createShaderModule({ code: `
+      @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+        var p = array<vec2f,3>(vec2f(0.0,0.8), vec2f(-0.8,-0.8), vec2f(0.8,-0.8));
+        return vec4f(p[i], 0.0, 1.0); }
+      @fragment fn fs() -> @location(0) vec4f { return vec4f(1.0, 0.0, 0.0, 1.0); }` });
+    const pipe = device.createRenderPipeline({ layout: "auto", vertex: { module: mod, entryPoint: "vs" },
+      fragment: { module: mod, entryPoint: "fs", targets: [{ format: fmt }] }, primitive: { topology: "triangle-list" } });
+    const tex = ctx.getCurrentTexture();
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginRenderPass({ colorAttachments: [{ view: tex.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 1, a: 1 } }] });
+    pass.setPipeline(pipe); pass.draw(3); pass.end();
+    // Read back center (inside triangle) and corner (background) pixels.
+    const buf = device.createBuffer({ size: 256 * 256 * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    enc.copyTextureToBuffer({ texture: tex }, { buffer: buf, bytesPerRow: 256 * 4 }, [256, 256]);
+    device.queue.submit([enc.finish()]);
+    await buf.mapAsync(GPUMapMode.READ);
+    const px = new Uint8Array(buf.getMappedRange());
+    const at = (x, y) => Array.from(px.slice((y * 256 + x) * 4, (y * 256 + x) * 4 + 4));
+    const bgra = fmt.startsWith("bgra");
+    const norm = (p) => bgra ? [p[2], p[1], p[0], p[3]] : p;
+    r.centerRGBA = norm(at(128, 150)); r.cornerRGBA = norm(at(2, 2));
+    r.triangleRendered = r.centerRGBA[0] > 200 && r.centerRGBA[2] < 50 && r.cornerRGBA[2] > 200;
+  } catch (e) { r.error = String(e && e.message || e); }
+  document.getElementById("o").textContent = JSON.stringify(r, null, 1);
+  setTimeout(() => window.probe.done(r), 300);
+})();
+</script></body></html>

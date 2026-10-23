@@ -1,9 +1,21 @@
+/**
+ * Preload for Figma web content (sandboxed, context-isolated).
+ *
+ * Figma's web app looks for `window.__figmaDesktop` and talks to it through a
+ * MessagePort. The object is created in the page's main world with
+ * contextBridge.executeInMainWorld (synchronous, before page scripts run); the
+ * port's other end stays here, in the isolated world, and forwards to ipcRenderer.
+ * No Node.js APIs are available here (Electron 45 sandboxed preload).
+ */
 import type { IpcRendererEvent } from "electron";
 import * as E from "electron";
 
 import { sendMsgToMain, registerCallbackWithMainProcess } from "Utils/Render";
 import { themes } from "./ThemesApplier";
+import { installWebGpuInstrumentation } from "./webgpuInstrumentation";
 import { isPrototypeUrl, isValidFigjamLink, isValidProjectLink } from "Utils/Common";
+
+const GPU_STATS_EVENT = "__flng_gpu_stats";
 
 interface IntiApiOptions {
   version: number;
@@ -43,14 +55,16 @@ const onWebMessage = (event: MessageEvent) => {
   try {
     resultPromise = msg.name && publicAPI && publicAPI[msg.name](msg.args);
   } catch (e) {
-    console.error("onWebMessage, err: ", msg.name, e);
-    throw e;
+    sendMsgToMain("logError", "[desktop] handler failed:", msg.name, String(e));
   } finally {
     if (msg.promiseID != null) {
       if (resultPromise instanceof Promise) {
         resultPromise
           .then((result) => {
-            webPort.postMessage({ result: result.data, promiseID: msg.promiseID });
+            webPort.postMessage(
+              { result: result?.data, promiseID: msg.promiseID },
+              result?.transferList ?? [],
+            );
           })
           .catch((error) => {
             const errorString = (error && error.name) || "Promise error";
@@ -83,12 +97,10 @@ const initWebApi = (props: IntiApiOptions) => {
     appVersion: props.appVersion,
     fileBrowser: props.fileBrowser,
     postMessage: function (name, args, transferList): void {
-      console.log("postMessage, name, args, transferList: ", name, args, transferList);
       channel.port1.postMessage({ name, args }, transferList);
     },
     registerCallback: function (name, args, callback) {
       const id = nextCallbackID++;
-      console.log(`Register pending promise with id: "${id}", name: "${name}", args: `, args);
       registeredCallbacks.set(id, callback);
       channel.port1.postMessage({ name, args, callbackID: id });
       return (): void => {
@@ -120,7 +132,6 @@ const initWebApi = (props: IntiApiOptions) => {
         if ("result" in msg) {
           pendingPromise.resolve(msg.result);
         } else {
-          console.error(`Pending Promise (id: "${msg.promiseID}") reject via error: `, msg.error);
           pendingPromise.reject(msg.error);
         }
       }
@@ -128,8 +139,6 @@ const initWebApi = (props: IntiApiOptions) => {
       const registeredCallback = registeredCallbacks.get(msg.callbackID);
       if (registeredCallback) {
         registeredCallback(msg.args);
-      } else {
-        console.log("callback missing? ", msg);
       }
     } else if (msg.name != null) {
       messageHandler(msg.name, msg.args);
@@ -199,9 +208,8 @@ const publicAPI: any = {
     sendMsgToMain("setIsInVoiceCall", args.isInVoiceCall);
   },
 
-  addTabAnalyticsMetadata(args: any) {
-    // sendMsgToMain("addTabAnalyticsMetadata", args.isUsingMicrophone);
-    console.log("Method addTabAnalyticsMetadata not implemented, args: ", args);
+  addTabAnalyticsMetadata() {
+    // not implemented
   },
   async requestMicrophonePermission() {
     let granted = false;
@@ -283,6 +291,8 @@ const publicAPI: any = {
   },
   setLoading(args: WebApi.SetLoading) {
     sendMsgToMain("setLoading", args);
+    // Figma reports when a file finished loading: used for project load timing.
+    sendMsgToMain("diag:setLoading", { loading: !!args?.loading, url: location.href, t: performance.now() });
   },
   setSaved(args: any) {
     sendMsgToMain("updateSaveStatus", args.saved);
@@ -403,70 +413,30 @@ const publicAPI: any = {
   },
 
   async getFontFile(args: WebApi.GetFontFile) {
-    const fontBuffer = await E.ipcRenderer.invoke("getFontFile", args);
+    const bytes: Uint8Array | null = await E.ipcRenderer.invoke("getFontFile", args);
 
-    return { data: fontBuffer, transferList: [fontBuffer] };
+    if (!bytes) {
+      return { data: null as ArrayBuffer | null };
+    }
+    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+
+    return { data: buffer, transferList: [buffer] };
   },
 
-  getClipboardData(args: any) {
-    return new Promise((resolve, reject) => {
-      if (E.clipboard.has("org.nspasteboard.ConcealedType")) {
-        sendMsgToMain("logError", "Clipboard unavailable");
-        reject(new Error("Clipboard unavailable"));
-        return;
-      }
+  // Electron 44+ has no clipboard module in renderers: the main process reads it.
+  async getClipboardData(args: any) {
+    const formats: string[] = Array.isArray(args?.formats) ? args.formats : [];
+    const result = await E.ipcRenderer.invoke("getClipboardData", formats);
 
-      const whitelistedFormats = ["com.adobe.pdf", "com.adobe.xd", "com.bohemiancoding.sketch.v3"];
+    if (!result) {
+      throw new Error("Formats not found");
+    }
 
-      const formats = args.getArray("formats");
-
-      for (const format of formats) {
-        let data = null;
-
-        if (format === "text/html") {
-          const unsafeHTML = E.clipboard.readHTML().trim();
-
-          if (unsafeHTML.includes("<!--(figma)") && unsafeHTML.includes("(/figma)-->")) {
-            data = Buffer.from(unsafeHTML);
-          }
-        } else if (format === "image/svg+xml") {
-          data = E.clipboard.readBuffer(format);
-          data = data.byteLength > 0 ? data : E.clipboard.readBuffer("Scalable Vector Graphics");
-          data =
-            data.byteLength > 0
-              ? data
-              : E.clipboard.readBuffer("CorePasteboardFlavorType 0x53564720");
-
-          if (data.byteLength === 0) {
-            const unsafeText = E.clipboard.readText().trim();
-            if (unsafeText.startsWith("<svg") && unsafeText.endsWith("</svg>")) {
-              data = Buffer.from(unsafeText);
-            }
-          }
-        } else if (format === "image/jpeg" || format === "image/png") {
-          data = E.clipboard.readImage().toBitmap();
-        } else if (whitelistedFormats.indexOf(format) !== -1) {
-          data = E.clipboard.readBuffer(format);
-        }
-
-        if (data && data.byteLength > 0) {
-          const result = {
-            data: data.buffer,
-            format: format,
-          };
-
-          resolve({ data: result, transferList: [data.buffer] });
-          return;
-        }
-      }
-
-      sendMsgToMain("logError", "Formats not found. Formats: ", formats);
-      reject(new Error("Formats not found"));
-    });
+    return { data: result, transferList: [result.data] };
   },
 
   setClipboardData(args: WebApi.SetClipboardData) {
-    E.ipcRenderer.send("setClipboardData", args);
+    E.ipcRenderer.invoke("setClipboardData", args);
   },
 
   async writeFiles(args: WebApi.WriteFiles) {
@@ -475,18 +445,18 @@ const publicAPI: any = {
 };
 
 const init = (fileBrowser: boolean): void => {
-  window.addEventListener(
-    "message",
-    (event) => {
-      if (event.data !== "init" || !event.ports || !event.ports.length) {
-        return;
-      }
+  // The first "init" from the page itself carries the port. The old `{ once: true }`
+  // dropped the listener on any earlier unrelated message and lost the bridge.
+  const onInit = (event: MessageEvent) => {
+    if (event.source !== window || event.data !== "init" || !event.ports || !event.ports.length) {
+      return;
+    }
 
-      webPort = event.ports[0];
-      webPort.onmessage = onWebMessage;
-    },
-    { once: true },
-  );
+    window.removeEventListener("message", onInit);
+    webPort = event.ports[0];
+    webPort.onmessage = onWebMessage;
+  };
+  window.addEventListener("message", onInit);
 
   const initWebOptions: IntiApiOptions = {
     version: API_VERSION,
@@ -496,7 +466,19 @@ const init = (fileBrowser: boolean): void => {
 
   initWebBindings();
 
-  E.webFrame.executeJavaScript(`(${initWebApi.toString()})(${JSON.stringify(initWebOptions)})`);
+  const config = E.ipcRenderer.sendSync("getPreloadConfig") ?? {};
+
+  if (config.webgpuInstrumentation) {
+    document.addEventListener(GPU_STATS_EVENT, (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      if (typeof detail === "string") sendMsgToMain("diag:webgpuStats", detail);
+    });
+    E.contextBridge.executeInMainWorld({ func: installWebGpuInstrumentation, args: [GPU_STATS_EVENT] });
+  }
+
+  if (config.desktopBridge !== false) {
+    E.contextBridge.executeInMainWorld({ func: initWebApi, args: [initWebOptions] });
+  }
 
   document.addEventListener("keydown", keydownHandler);
   document.addEventListener("DOMContentLoaded", () => {

@@ -1,22 +1,7 @@
-import { parse } from "url";
-import {
-  app,
-  shell,
-  BrowserView,
-  BrowserViewConstructorOptions,
-  Rectangle,
-  BrowserWindow,
-  DidCreateWindowDetails,
-  Event,
-  HandlerDetails,
-} from "electron";
+import { app, Rectangle, WebContentsView, HandlerDetails, WindowOpenHandlerResponse } from "electron";
 
-import { LOGIN_PAGE, RECENT_FILES } from "Const";
-import {
-  preloadMainScriptPathDev,
-  preloadMainScriptPathProd,
-  toggleDetachedDevTools,
-} from "Utils/Main";
+import { FIGMA_WEB_PREFERENCES, LOGIN_PAGE, RECENT_FILES } from "Const";
+import { preloadMainScriptPathDev, preloadMainScriptPathProd, toggleDetachedDevTools } from "Utils/Main";
 import {
   isDev,
   isValidProjectLink,
@@ -25,25 +10,18 @@ import {
   isFigmaDocLink,
   isFigmaBoardLink,
   isFigmaDesignLink,
+  parseURL,
 } from "Utils/Common";
 import { storage } from "Main/Storage";
-import { logger } from "Main/Logger";
-import { electron } from 'process';
+import { openExternalSafe } from "Main/Session";
+import { figmaWindowOpenHandler, isEditorLikeUrl } from "./Tab";
 
+/** The always-present "file browser" (recent files) tab of a window. */
 export default class MainTab {
   private _userId: string;
-  private options: BrowserViewConstructorOptions = {
-    webPreferences: {
-      nodeIntegration: false,
-      webgl: true,
-      contextIsolation: false,
-      zoomFactor: 1,
-      preload: isDev ? preloadMainScriptPathDev : preloadMainScriptPathProd,
-    },
-  };
 
   public id: number;
-  public view: BrowserView;
+  public view: WebContentsView;
 
   constructor(private windowId: number) {
     this.initTab();
@@ -73,27 +51,31 @@ export default class MainTab {
   public handleUrl(path: string) {
     this.view.webContents.send("handleUrl", path);
   }
-  public setAutosize(flag: boolean) {
-    this.view.setAutoResize({
-      width: flag,
-      height: flag,
-      horizontal: flag,
-      vertical: flag,
-    });
-  }
   public setBounds(bounds: Rectangle) {
     this.view.setBounds(bounds);
+  }
+  public setVisible(visible: boolean) {
+    this.view.setVisible(visible);
+  }
+  public destroy() {
+    if (!this.view.webContents.isDestroyed()) {
+      this.view.webContents.close();
+    }
   }
 
   private initTab() {
     this._userId = storage.settings.userId;
     const url = `${RECENT_FILES}/?fuid=${this._userId}`;
 
-    this.view = new BrowserView(this.options);
+    this.view = new WebContentsView({
+      webPreferences: {
+        ...FIGMA_WEB_PREFERENCES,
+        preload: isDev ? preloadMainScriptPathDev : preloadMainScriptPathProd,
+      },
+    });
     this.id = this.view.webContents.id;
 
     this.loadUrl(url);
-    this.setAutosize(true);
 
     isDev && toggleDetachedDevTools(this.view.webContents);
 
@@ -110,95 +92,60 @@ export default class MainTab {
     this.view.webContents.send("loadCurrentTheme", theme);
   }
 
-  private onMainTabWillNavigate(event: Event<any>, url: string) {
-    if (isValidProjectLink(url) || isPrototypeUrl(url)) {
-      app.emit("openUrlInNewTab", url);
-
-      event.preventDefault();
-    }
-  }
-  private onDomReady(event: any) {
+  private onDomReady() {
     this.reloadCurrentTheme();
   }
-  private onMainWindowWillNavigate(event: Event<any>, url: string) {
-    if (event?.sender) {
-      const currentUrl = event.sender.getURL();
-      if (isAppAuthRedeem(url)) {
-        return;
-      }
-
-      if (url === currentUrl) {
-        event.preventDefault();
-        return;
-      }
-
-
-      const from = parse(currentUrl);
-      const to = parse(url);
-
-      if (from.pathname === "/login") {
-        // this.tabManager.reloadAll();
-
-        event.preventDefault();
-        return;
-      }
-
-      if (to.pathname === "/logout") {
-        app.emit("signOut");
-      }
-
-      if (to.search && to.search.match(/[\?\&]redirected=1/)) {
-        event.preventDefault();
-        return;
-      }
+  private onWillNavigate(event: Electron.Event, url: string) {
+    // Files, prototypes and boards open in their own tab, the file browser stays.
+    if (isValidProjectLink(url) || isPrototypeUrl(url) || isFigmaBoardLink(url) || isFigmaDesignLink(url)) {
+      app.emit("openUrlInNewTab", url);
+      event.preventDefault();
+      return;
     }
 
+    const currentUrl = this.view.webContents.getURL();
+    if (isAppAuthRedeem(url)) {
+      return;
+    }
+    if (url === currentUrl) {
+      event.preventDefault();
+      return;
+    }
+
+    const from = parseURL(currentUrl);
+    const to = parseURL(url);
+
+    if (from?.pathname === "/login") {
+      event.preventDefault();
+      return;
+    }
+    if (to?.pathname === "/logout") {
+      app.emit("signOut");
+    }
+    if (to?.search && /[?&]redirected=1/.test(to.search)) {
+      event.preventDefault();
+      return;
+    }
     if (isFigmaDocLink(url)) {
-      shell.openExternal(url);
+      openExternalSafe(url);
       event.preventDefault();
-      return;
-    }
-    if (isFigmaBoardLink(url) || isFigmaDesignLink(url)) {
-      app.emit("openUrlInNewTab", url);
-      event.preventDefault();
-      return;
     }
   }
-  private onNewWindow(window: BrowserWindow, details: DidCreateWindowDetails) {
-    const { url } = details;
-    logger.debug("newWindow, url: ", url);
 
-    if (/start_google_sso/.test(url)) return;
-
-    if (isPrototypeUrl(url) || isValidProjectLink(url)) {
-      app.emit("openUrlInNewTab", url);
-      return;
-    }
-    if (isFigmaBoardLink(url) || isFigmaDesignLink(url)) {
-      window.destroy()
-      app.emit("openUrlInNewTab", url);
-      return;
-    }
-
-    shell.openExternal(url);
-  }
-
-  private windowOpenHandler(details: HandlerDetails) {
-    const { url } = details;
-
-    if (isPrototypeUrl(url) || isValidProjectLink(url) || isFigmaBoardLink(url) || isFigmaDesignLink(url)) {
-      app.emit("openUrlInNewTab", url);
+  private windowOpenHandler(details: HandlerDetails): WindowOpenHandlerResponse {
+    if (isEditorLikeUrl(details.url)) {
+      app.emit("openUrlInNewTab", details.url);
       return { action: "deny" };
-    } else {
-      return { action: "allow" };
     }
+
+    return figmaWindowOpenHandler(details);
   }
 
   private registerEvents() {
-    this.view.webContents.setWindowOpenHandler(this.windowOpenHandler.bind(this));
-    this.view.webContents.on("will-navigate", this.onMainTabWillNavigate.bind(this));
-    this.view.webContents.on("will-navigate", this.onMainWindowWillNavigate.bind(this));
-    this.view.webContents.on("dom-ready", this.onDomReady.bind(this));
-    this.view.webContents.on("did-create-window", this.onNewWindow.bind(this));
+    const wc = this.view.webContents;
+
+    wc.setWindowOpenHandler(this.windowOpenHandler.bind(this));
+    wc.on("will-navigate", this.onWillNavigate.bind(this));
+    wc.on("dom-ready", this.onDomReady.bind(this));
   }
 }

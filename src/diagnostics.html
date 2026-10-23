@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'">
+<title>Figma Linux NG — Diagnostics</title>
+<style>
+  :root { color-scheme: dark; --bg:#1e1e1e; --panel:#2c2c2c; --fg:#e6e6e6; --muted:#9a9a9a; --ok:#1bc47d; --warn:#ffc700; --bad:#f24822; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.45 Inter, system-ui, sans-serif; }
+  header { display:flex; gap:8px; align-items:center; padding:10px 16px; background:var(--panel); position:sticky; top:0; }
+  header h1 { font-size:14px; margin:0 auto 0 0; }
+  button { background:#3a3a3a; color:var(--fg); border:1px solid #4a4a4a; border-radius:4px; padding:5px 10px; cursor:pointer; }
+  button:hover { background:#474747; }
+  main { padding:12px 16px 40px; display:grid; gap:14px; }
+  section { background:var(--panel); border-radius:6px; padding:10px 14px; overflow-x:auto; }
+  h2 { font-size:13px; margin:0 0 8px; color:#fff; }
+  table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; }
+  th, td { text-align:left; padding:3px 8px; border-bottom:1px solid #3a3a3a; white-space:nowrap; }
+  th { color:var(--muted); font-weight:500; }
+  td.url { max-width:520px; overflow:hidden; text-overflow:ellipsis; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); } .muted { color:var(--muted); }
+  pre { margin:0; white-space:pre-wrap; font:12px ui-monospace, monospace; }
+  canvas { width:96px; height:96px; border:1px solid #444; vertical-align:middle; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Figma Linux NG — Diagnostics</h1>
+  <span id="status" class="muted"></span>
+  <button id="selftest">WebGPU self-test</button>
+  <button id="trace">Record GPU trace (10 s)</button>
+  <button id="save">Save report</button>
+</header>
+<main>
+  <section><h2>WebGPU (this diagnostics page)</h2><div id="webgpu"><span class="muted">Press “WebGPU self-test”.</span></div></section>
+  <section><h2>Figma tabs: renderer and load time</h2><div id="tabs"></div></section>
+  <section><h2>GPU</h2><div id="gpu"></div></section>
+  <section><h2>Processes</h2><div id="procs"></div></section>
+  <section><h2>Network errors</h2><div id="net"></div></section>
+  <section><h2>Crashes</h2><div id="crashes"></div></section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const table = (cols, rows) =>
+  `<table><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>${rows
+    .map((r) => `<tr>${r.map((v) => (typeof v === "object" && v && v.html ? `<td class="${v.cls || ""}">${v.html}</td>` : `<td>${esc(v)}</td>`)).join("")}</tr>`)
+    .join("")}</table>`;
+const cls = (text, c) => ({ html: esc(text), cls: c });
+const ms = (v) => (v === undefined || v === null ? "—" : `${(v / 1000).toFixed(1)} s`);
+
+async function refresh() {
+  const s = await window.diag.snapshot();
+  if (!s) return;
+  $("status").textContent = `Electron ${s.app.electron} · Chromium ${s.app.chrome} · ${s.app.session || ""} · up ${s.uptimeSec}s`;
+
+  $("tabs").innerHTML = s.tabs.length
+    ? table(
+        ["Tab", "Renderer verdict", "WebGPU submits", "Canvas frames", "WebGL draws", "Adapter", "DOM ready", "Loaded", "Figma ready", "Hangs"],
+        s.tabs.map((t) => {
+          const w = t.webgpu || {};
+          const l = t.loads[t.loads.length - 1] || {};
+          const a = (w.adapters || [])[0];
+          return [
+            { html: esc(t.title || t.url), cls: "url" },
+            cls(t.verdict, /^WebGPU/.test(t.verdict) ? "ok" : /^WebGL/.test(t.verdict) ? "warn" : "muted"),
+            w.webgpuSubmits ?? "—", w.webgpuGetCurrentTexture ?? "—", w.webglDrawCalls ?? "—",
+            a ? `${a.vendor}/${a.architecture}${a.isFallbackAdapter ? " (fallback!)" : ""}` : w.adapterNull ? "null" : "—",
+            ms(l.domReady), ms(l.didFinishLoad), ms(l.figmaLoaded), t.unresponsiveEvents,
+          ];
+        }),
+      ) + (s.webgpuInstrumentation ? "" : `<p class="warn">WebGPU instrumentation is off. Start with <code>--webgpu-diag</code> to see which API Figma draws with.</p>`)
+    : `<span class="muted">No Figma tabs.</span>`;
+
+  const g = s.gpu, n = g.nvidia;
+  const fs = Object.entries(g.featureStatus).map(([k, v]) => [k, cls(v, /^enabled/.test(v) ? "ok" : /software|unavailable/.test(v) ? "bad" : "muted")]);
+  $("gpu").innerHTML =
+    `<p>Profile: <b>${esc(g.plan?.profile)}</b> · switches: <code>${esc(JSON.stringify(g.plan?.switches))}</code> · enable-features: <code>${esc(g.plan?.enableFeatures?.join(","))}</code></p>` +
+    `<p>GL renderer: ${esc(g.glRenderer)}</p>` +
+    (n ? `<p>${esc(n.name)} · driver ${esc(n.driver)} · GPU ${n.utilizationGpuPercent}% · VRAM ${n.memoryUsedMB}/${n.memoryTotalMB} MB · ${n.temperatureC}°C · ${n.powerW} W</p>` +
+      (n.thisAppProcesses.length ? table(["PID", "Type", "VRAM MB"], n.thisAppProcesses.map((p) => [p.pid, p.type, p.vramMB])) : "") : `<p class="muted">nvidia-smi not available</p>`) +
+    table(["Feature", "Status"], fs);
+
+  const total = s.processes.reduce((a, p) => a + p.workingSetMB, 0);
+  $("procs").innerHTML =
+    `<p>Total working set: <b>${total.toFixed(0)} MB</b> in ${s.processes.length} processes</p>` +
+    table(
+      ["PID", "Type", "CPU %", "Working set MB", "Peak MB", "Sandboxed", "Content"],
+      s.processes.sort((a, b) => b.workingSetMB - a.workingSetMB).map((p) => [
+        p.pid, p.serviceName ? `${p.type} (${p.serviceName})` : p.type, p.cpuPercent, p.workingSetMB, p.peakWorkingSetMB,
+        p.sandboxed === undefined ? "—" : p.sandboxed, { html: esc(p.webContents.map((w) => w.title || w.url).join(" | ")), cls: "url" },
+      ]),
+    );
+
+  const counts = Object.entries(s.network.errorCounts);
+  $("net").innerHTML = counts.length
+    ? table(["Host / error", "Count"], counts) + table(["Time", "Error", "Type", "URL"], s.network.recentErrors.slice(-15).reverse().map((e) => [
+        new Date(e.at).toLocaleTimeString(), e.error || e.status, e.resourceType, { html: esc(e.url), cls: "url" }]))
+    : `<span class="ok">No failed requests.</span>`;
+  $("crashes").innerHTML = s.crashes.length
+    ? table(["Time", "Type", "Reason", "Exit"], s.crashes.map((c) => [new Date(c.at).toLocaleTimeString(), c.type, c.reason, c.exitCode]))
+    : `<span class="ok">None.</span>`;
+}
+
+async function selfTest() {
+  const out = $("webgpu");
+  out.innerHTML = "Running…";
+  const r = { navigatorGpu: "gpu" in navigator };
+  try {
+    const adapter = await navigator.gpu?.requestAdapter({ powerPreference: "high-performance" });
+    if (!adapter) throw new Error("requestAdapter() returned null");
+    const i = adapter.info || {};
+    Object.assign(r, { vendor: i.vendor, architecture: i.architecture, description: i.description, isFallbackAdapter: i.isFallbackAdapter, features: adapter.features.size });
+    const device = await adapter.requestDevice();
+    r.device = true;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 64;
+    const fmt = navigator.gpu.getPreferredCanvasFormat();
+    const ctx = canvas.getContext("webgpu");
+    ctx.configure({ device, format: fmt, alphaMode: "opaque", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+    const mod = device.createShaderModule({ code: `@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+      var p = array<vec2f,3>(vec2f(0.0,0.8), vec2f(-0.8,-0.8), vec2f(0.8,-0.8)); return vec4f(p[i], 0.0, 1.0); }
+      @fragment fn fs() -> @location(0) vec4f { return vec4f(1.0, 0.2, 0.2, 1.0); }` });
+    const pipe = device.createRenderPipeline({ layout: "auto", vertex: { module: mod, entryPoint: "vs" }, fragment: { module: mod, entryPoint: "fs", targets: [{ format: fmt }] } });
+    const tex = ctx.getCurrentTexture();
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginRenderPass({ colorAttachments: [{ view: tex.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0.3, a: 1 } }] });
+    pass.setPipeline(pipe); pass.draw(3); pass.end();
+    const buf = device.createBuffer({ size: 64 * 64 * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    enc.copyTextureToBuffer({ texture: tex }, { buffer: buf, bytesPerRow: 256 }, [64, 64]);
+    device.queue.submit([enc.finish()]);
+    await buf.mapAsync(GPUMapMode.READ);
+    const px = new Uint8Array(buf.getMappedRange());
+    const o = (40 * 64 + 32) * 4;
+    const red = fmt.startsWith("bgra") ? px[o + 2] : px[o];
+    r.triangleRendered = red > 200;
+    out.innerHTML = "";
+    out.append(canvas);
+  } catch (e) {
+    r.error = String(e.message || e);
+    out.innerHTML = "";
+  }
+  const good = r.triangleRendered && !r.isFallbackAdapter;
+  out.insertAdjacentHTML("beforeend", `<p class="${good ? "ok" : "bad"}">${good ? "Hardware WebGPU works" : r.isFallbackAdapter ? "Software (fallback) adapter!" : "WebGPU failed"}</p><pre>${esc(JSON.stringify(r, null, 2))}</pre>`);
+}
+
+$("selftest").onclick = selfTest;
+$("save").onclick = async () => { const f = await window.diag.saveReport(); $("status").textContent = `Saved: ${f}`; };
+$("trace").onclick = async () => { $("status").textContent = "Recording GPU trace…"; const f = await window.diag.recordTrace(10); $("status").textContent = `Trace: ${f}`; };
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

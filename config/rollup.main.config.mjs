@@ -1,18 +1,22 @@
-const path = require("path");
-const commonjs = require("@rollup/plugin-commonjs");
-const alias = require("@rollup/plugin-alias");
-const terser = require("@rollup/plugin-terser");
-const typescript = require("@rollup/plugin-typescript");
+import { fileURLToPath } from "url";
+import { spawn } from "child_process";
+import path from "path";
+import commonjs from "@rollup/plugin-commonjs";
+import alias from "@rollup/plugin-alias";
+import terser from "@rollup/plugin-terser";
+import typescript from "@rollup/plugin-typescript";
 
-const dotenv = require("dotenv");
+import dotenv from "dotenv";
 dotenv.config();
 
 const watch = process.env.ROLLUP_WATCH === "true";
 const production = process.env.NODE_ENV !== "dev";
-const projectRootDir = path.resolve(__dirname);
+const projectRootDir = path.dirname(fileURLToPath(import.meta.url));
 
-module.exports = {
+export default {
   input: "src/main/index.ts",
+  // Node built-ins, electron and runtime deps stay require()s (resolved from dist/node_modules when packaged).
+  external: (id) => /^(electron|node:|fs|path|os|child_process|util|crypto|url|events|stream|zlib)(\/|$)/.test(id) || ["chokidar", "adm-zip"].includes(id),
   output: {
     sourcemap: !production,
     format: "cjs",

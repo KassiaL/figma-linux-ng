@@ -15,14 +15,8 @@ export const DEFAULT_SETTINGS: Types.SettingsInterface = {
     panelHeight: 40,
     saveLastOpenedTabs: true,
     exportDir: `${process.env.HOME}/Pictures/Figma`,
-    commandSwitches: [
-      { switch: "enable-gpu-rasterization" },
-      // { switch: "enable-unsafe-webgpu" },
-      // { switch: "enable-skia-graphite" },
-      // { switch: "enable-accelerated-2d-canvas" },
-      { switch: "enable-experimental-canvas-features" },
-      { switch: "use-vulkan" },
-    ],
+    // Extra user-defined Chromium switches. GPU switches come from gpuProfile (see Main/Gpu).
+    commandSwitches: [],
     fontDirs: [
       "/usr/share/fonts",
       "/usr/local/share/fonts",
@@ -39,6 +33,13 @@ export const DEFAULT_SETTINGS: Types.SettingsInterface = {
     creatorsThemesDropdownOpen: false,
     useOldPreviewer: false,
     dontShowTutorialCreator: false,
+    gpuProfile: "vulkan",
+    enableUnsafeWebGpu: false,
+    ozonePlatform: "auto",
+    userAgentOS: "windows",
+    lazyRestoreTabs: true,
+    webgpuInstrumentation: false,
+    registerProtocolHandler: false,
   },
   theme: {
     currentTheme: "0",

@@ -12,6 +12,9 @@ declare namespace Electron {
   // }
 
   interface App extends NodeJS.EventEmitter {
+    // Custom app-level events used as an internal bus (see Main/*).
+    on(event: string, listener: (...args: any[]) => void): this;
+    removeListener(event: string, listener: (...args: any[]) => void): this;
     on(event: "newFile", listener: (sender: Electron.WebContents) => void): this;
     on(event: "newWindow", listener: (sender: Electron.WebContents) => void): this;
     on(event: "reloadTab", listener: (tabId: number) => void): this;

@@ -1,3 +1,7 @@
+// Keep first: sets app identity and profile paths before anything reads userData.
+import "./bootstrap";
+import { applyGpuSwitches } from "./Gpu";
+
 import App from "./App";
 import Session from "./Session";
 import FontManager from "./Fonts";
@@ -13,6 +17,13 @@ process.on("uncaughtException", (error: Error) => {
 process.on("unhandledRejection", (reason: Error) => {
   logger.error(`unhandledRejection: `, reason);
 });
+
+const gpuPlan = applyGpuSwitches();
+logger.info(
+  `[gpu] profile=${gpuPlan.profile} switches=${JSON.stringify(gpuPlan.switches)} ` +
+    `enable-features=${gpuPlan.enableFeatures.join(",")}`,
+);
+gpuPlan.warnings.forEach((w) => logger.warn(`[gpu] ${w}`));
 
 new App(
   new WindowManager(),

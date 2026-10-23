@@ -9,12 +9,13 @@ import { storage } from "Storage";
 import { logger } from "./Logger";
 import { FILE_EXTENSION_WHITE_LIST, FILE_WHITE_LIST, MANIFEST_FILE_NAME } from "Const";
 import { ALLOW_CODE_FILES, ALLOW_EXT_FILES, ALLOW_UI_FILES } from "Utils/Common";
-import { access, mkPath } from "Utils/Main";
+import { access, mkPath, isFigmaSender, describeSender } from "Utils/Main";
 
 type ObserverCallback = (args: any) => void;
 
 export default class ExtensionManager {
   private registeredCancelCallbackMap: Map<string, () => void> = new Map();
+  private trackedSenders = new Set<number>();
   private extensionMap: Map<number, Extensions.Extension> = new Map();
   private manifestObservers: Array<Extensions.ManifestObserver> = [];
   private codeObservers: Array<Extensions.ManifestObserver> = [];
@@ -191,7 +192,7 @@ export default class ExtensionManager {
 
         this.extensionMap.set(id, {
           ...rest,
-          observeFiles: new Map((files ?? []).map((f) => [f, null])),
+          observeFiles: new Map((files ?? []).map((f): [string, any] => [f, null])),
         });
       }
     }
@@ -390,7 +391,7 @@ export default class ExtensionManager {
 
     this.extensionMap.set(id, {
       path,
-      observeFiles: new Map(observeFiles.map((v) => [v, null])),
+      observeFiles: new Map(observeFiles.map((v): [string, any] => [v, null])),
       lastKnownName: manifest.name,
       lastKnownPluginId: manifest.id,
       cachedContainsWidget: false,
@@ -641,7 +642,7 @@ export default class ExtensionManager {
     };
 
     this.addManifestObserver(observer);
-    this.registeredCancelCallbackMap.set(`${callbackID}:${event.sender.id}`, cancel);
+    this.trackCallback(event, callbackID, cancel);
   }
   private registerCodeChangeObserver(event: IpcMainEvent, callbackID: number, args?: any) {
     const observer = (args: any) => {
@@ -652,7 +653,7 @@ export default class ExtensionManager {
     };
 
     this.addCodeObserver(observer, ALLOW_CODE_FILES);
-    this.registeredCancelCallbackMap.set(`${callbackID}:${event.sender.id}`, cancel);
+    this.trackCallback(event, callbackID, cancel);
   }
   private registerUiChangeObserver(event: IpcMainEvent, callbackID: number, args?: any) {
     const observer = (args: any) => {
@@ -663,44 +664,82 @@ export default class ExtensionManager {
     };
 
     this.addCodeObserver(observer, ALLOW_UI_FILES);
-    this.registeredCancelCallbackMap.set(`${callbackID}:${event.sender.id}`, cancel);
+    this.trackCallback(event, callbackID, cancel);
   }
   private webCancelCallback(event: IpcMainEvent, callbackID: number) {
     const key = `${callbackID}:${event.sender.id}`;
 
-    this.registeredCancelCallbackMap.get(key)();
+    this.registeredCancelCallbackMap.get(key)?.();
     this.registeredCancelCallbackMap.delete(key);
+  }
+
+  // Observers belong to a tab: drop them when its webContents goes away
+  // (previously they leaked and kept notifying, falling back to the main tab).
+  private trackCallback(event: IpcMainEvent, callbackID: number, cancel: () => void) {
+    const sender = event.sender;
+    const key = `${callbackID}:${sender.id}`;
+
+    this.registeredCancelCallbackMap.set(key, cancel);
+
+    if (!this.trackedSenders.has(sender.id)) {
+      this.trackedSenders.add(sender.id);
+      const id = sender.id;
+      const cleanup = () => {
+        for (const [k, c] of this.registeredCancelCallbackMap) {
+          if (k.endsWith(`:${id}`)) {
+            c();
+            this.registeredCancelCallbackMap.delete(k);
+          }
+        }
+      };
+      sender.once("destroyed", () => {
+        cleanup();
+        this.trackedSenders.delete(id);
+      });
+      sender.on("did-start-navigation", (details) => details.isMainFrame && !details.isSameDocument && cleanup());
+    }
+  }
+
+  // Local plugin file access is only for Figma's own pages.
+  private guard<A extends any[], R>(fn: (event: IpcMainEvent | IpcMainInvokeEvent, ...args: A) => R) {
+    return (event: IpcMainEvent | IpcMainInvokeEvent, ...args: A): R | undefined => {
+      if (!isFigmaSender(event)) {
+        logger.warn("[security] plugin IPC from untrusted sender:", describeSender(event));
+        return undefined;
+      }
+      return fn.call(this, event, ...args);
+    };
   }
 
   private registerEvents() {
     ipcMain.on(
       `web-callback:registerManifestChangeObserver`,
-      this.registerManifestChangeObserver.bind(this),
+      this.guard(this.registerManifestChangeObserver),
     );
     ipcMain.on(
       `web-callback:registerCodeChangeObserver`,
-      this.registerCodeChangeObserver.bind(this),
+      this.guard(this.registerCodeChangeObserver),
     );
-    ipcMain.on(`web-callback:registerUiChangeObserver`, this.registerUiChangeObserver.bind(this));
-    ipcMain.on("web-cancel-callback", this.webCancelCallback.bind(this));
+    ipcMain.on(`web-callback:registerUiChangeObserver`, this.guard(this.registerUiChangeObserver));
+    ipcMain.on("web-cancel-callback", this.guard(this.webCancelCallback));
 
-    ipcMain.on("openExtensionDirectory", this.openExtensionDirectory.bind(this));
-    ipcMain.on("removeLocalFileExtension", this.removeLocalFileExtension.bind(this));
+    ipcMain.on("openExtensionDirectory", this.guard(this.openExtensionDirectory));
+    ipcMain.on("removeLocalFileExtension", this.guard(this.removeLocalFileExtension));
 
     ipcMain.handle(
       "writeNewExtensionDirectoryToDisk",
-      this.writeNewExtensionDirectoryToDisk.bind(this),
+      this.guard(this.writeNewExtensionDirectoryToDisk),
     );
     ipcMain.handle(
       "createMultipleNewLocalFileExtensions",
-      this.createMultipleNewLocalFileExtensions.bind(this),
+      this.guard(this.createMultipleNewLocalFileExtensions),
     );
     ipcMain.handle(
       "getLocalManifestFileExtensionIdsToCachedMetadataMap",
-      this.getLocalManifestFileExtensionIdsToCachedMetadataMap.bind(this),
+      this.guard(this.getLocalManifestFileExtensionIdsToCachedMetadataMap),
     );
-    ipcMain.handle("getLocalFileExtensionManifest", this.getLocalFileExtensionManifest.bind(this));
-    ipcMain.handle("getLocalFileExtensionSource", this.getLocalFileExtensionSource.bind(this));
-    ipcMain.handle("getAllLocalFileExtensionIds", this.getAllLocalFileExtensionIds.bind(this));
+    ipcMain.handle("getLocalFileExtensionManifest", this.guard(this.getLocalFileExtensionManifest));
+    ipcMain.handle("getLocalFileExtensionSource", this.guard(this.getLocalFileExtensionSource));
+    ipcMain.handle("getAllLocalFileExtensionIds", this.guard(this.getAllLocalFileExtensionIds));
   }
 }

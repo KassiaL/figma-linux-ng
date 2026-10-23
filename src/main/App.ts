@@ -1,24 +1,22 @@
 import {
   app,
-  net,
   session,
-  clipboard,
-  nativeImage,
   ipcMain,
   Event,
   IpcMainEvent,
   IpcMainInvokeEvent,
   protocol,
-  ProtocolRequest,
-  ProtocolResponse,
 } from "electron";
 
 import * as Const from "Const";
-import { request } from "Utils/Main";
-import { isAppAuthLink, isValidProjectLink } from "Utils/Common";
+import { request, isFigmaSender, isTrustedSender, describeSender } from "Utils/Main";
+import { isAppAuthLink, isValidProjectLink, isFigmaProtocolUrl } from "Utils/Common";
 import Args from "./Args";
+import { cliFlag } from "./bootstrap";
 import { logger } from "./Logger";
 import { storage } from "./Storage";
+import { readClipboardData, writeClipboardData } from "./Clipboard";
+import Diagnostics from "./Diagnostics";
 import ExtensionManager from "./ExtensionManager";
 import ThemeManager from "./Ui/ThemeManager";
 import WindowManager from "./Ui/WindowManager";
@@ -26,6 +24,8 @@ import Session from "./Session";
 import FontManager from "./Fonts";
 
 export default class App {
+  private diagnostics: Diagnostics;
+
   constructor(
     private windowManager: WindowManager,
     private extensionManager: ExtensionManager,
@@ -36,63 +36,64 @@ export default class App {
     const isSingleInstance = app.requestSingleInstanceLock();
 
     if (!isSingleInstance) {
-      app.emit("focusLastWindow");
       app.quit();
       return;
     }
 
-    this.applySwitches();
-
-    if (!app.isDefaultProtocolClient(Const.PROTOCOL)) {
-      app.setAsDefaultProtocolClient(Const.PROTOCOL);
+    // figma:// is owned by whichever client the user registered (the upstream
+    // Figma Linux by default). Taking it over is opt-in so both clients can coexist.
+    if (storage.settings.app.registerProtocolHandler || cliFlag("register-protocol")) {
+      if (!app.isDefaultProtocolClient(Const.PROTOCOL)) {
+        app.setAsDefaultProtocolClient(Const.PROTOCOL);
+      }
+      storage.settings.app.registerProtocolHandler = true;
     }
 
+    this.diagnostics = new Diagnostics();
     this.registerEvents();
   }
 
   private ready = (): void => {
     const { figmaUrl } = Args();
 
-    this.windowManager.restoreState();
     this.session.handleAppReady();
+    this.diagnostics.handleAppReady();
+    this.windowManager.restoreState();
 
-    setTimeout(() => {
-      if (figmaUrl !== "") {
-        this.windowManager.openUrl(figmaUrl);
-      }
-    }, 1500);
+    if (figmaUrl !== "") {
+      this.windowManager.whenReady(() => this.handleFigmaUrl(figmaUrl));
+    }
 
     protocol.handle(Const.PROTOCOL, (req: GlobalRequest) => {
       logger.info("protocol.handle, req.url: ", req.url);
-      if (this.windowManager.tryHandleAppAuthRedeemUrl(req.url)) {
-        return new Response();
-      }
+      this.handleFigmaUrl(req.url);
 
-      this.windowManager.openUrl(req.url);
-
-      return net.fetch(req.url, { method: req.method });
+      return new Response(null, { status: 204 });
     });
   };
 
-  private secondInstance(event: Event, argv: string[]) {
-    let projectLink = "";
+  private handleFigmaUrl(url: string) {
+    if (this.windowManager.tryHandleAppAuthRedeemUrl(url)) {
+      return;
+    }
+    if (isFigmaProtocolUrl(url) || isValidProjectLink(url) || /^https:\/\/(www\.)?figma\.com\//.test(url)) {
+      this.windowManager.focusLastWindow();
+      this.windowManager.openUrl(url);
+    }
+  }
+
+  private secondInstance(_: Event, argv: string[]) {
     logger.debug("second-instance, argv: ", argv);
 
-    const paramIndex = argv.findIndex((i) => isValidProjectLink(i));
-    const hasAppAuthorization = argv.find((i) => isAppAuthLink(i));
-
-    logger.debug("second-instance, hasAppAuthorization: ", hasAppAuthorization);
-
-    if (this.windowManager.tryHandleAppAuthRedeemUrl(hasAppAuthorization)) {
+    const authLink = argv.find((i) => isAppAuthLink(i));
+    if (authLink) {
+      this.windowManager.tryHandleAppAuthRedeemUrl(authLink);
       return;
     }
 
-    if (paramIndex !== -1) {
-      projectLink = argv[paramIndex];
-    }
-
-    if (projectLink !== "") {
-      this.windowManager.focusLastWindow();
+    const projectLink = argv.find((i) => isValidProjectLink(i) || isFigmaProtocolUrl(i));
+    this.windowManager.focusLastWindow();
+    if (projectLink) {
       this.windowManager.openUrl(projectLink);
     }
   }
@@ -104,62 +105,50 @@ export default class App {
     this.themeManager.loadThemes();
     this.themeManager.loadCreatorTheme();
   }
-  private applySwitches() {
-    // Chromium flags for better performance and GPU support
-    // Full flags reference: https://peter.sh/experiments/chromium-command-line-switches/
-    const switches = storage.settings.app.commandSwitches;
-
-    if (!switches.length) {
-      return;
-    }
-
-    for (const item of switches) {
-      app.commandLine.appendSwitch(item.switch, item.value);
-    }
-
-    const colorSpace = storage.settings.app.enableColorSpaceSrgb;
-
-    if (colorSpace) {
-      app.commandLine.appendSwitch("force-color-profile", "srgb");
-    } else {
-      app.commandLine.appendSwitch("disable-color-correct-rendering");
-    }
-  }
   private setAuthedUsers(_: IpcMainEvent, userIds: string[]) {
-    if (!Array.isArray(storage.settings.authedUserIDs)) {
-      storage.settings.authedUserIDs = userIds;
-      storage.save();
-    }
+    if (!Array.isArray(userIds)) return;
+    const known = Array.isArray(storage.settings.authedUserIDs) ? storage.settings.authedUserIDs : [];
 
-    storage.settings.authedUserIDs = [...new Set([...storage.settings.authedUserIDs, ...userIds])];
+    storage.settings.authedUserIDs = [...new Set([...known, ...userIds.map(String)])];
   }
   private setWorkspaceName(_: IpcMainEvent, name: string) {
-    logger.warn("The setWorkspaceName not implemented, workspaceName: ", name);
+    logger.debug("The setWorkspaceName not implemented, workspaceName: ", name);
   }
   private setFigjamEnabled(_: IpcMainEvent, enabled: boolean) {
-    logger.warn("The setFigjamEnabled not implemented, enabled: ", enabled);
+    logger.debug("The setFigjamEnabled not implemented, enabled: ", enabled);
   }
-  private setClipboardData(_: IpcMainEvent, data: WebApi.SetClipboardData) {
-    const format = data.format;
-    const buffer = Buffer.from(data.data);
+  private async setClipboardData(event: IpcMainInvokeEvent, data: WebApi.SetClipboardData) {
+    if (!isFigmaSender(event)) {
+      logger.warn("[security] setClipboardData from untrusted sender:", describeSender(event));
+      return false;
+    }
 
-    if (["image/jpeg", "image/png"].indexOf(format) !== -1) {
-      clipboard.writeImage(nativeImage.createFromBuffer(buffer));
-    } else if (format === "image/svg+xml") {
-      clipboard.writeText(buffer.toString());
-    } else if (format === "application/pdf") {
-      clipboard.writeBuffer("Portable Document Format", buffer);
-    } else {
-      clipboard.writeBuffer(format, buffer);
+    try {
+      await writeClipboardData(data);
+      return true;
+    } catch (error) {
+      logger.error("setClipboardData failed:", error);
+      return false;
     }
   }
-  private async getFonts(_: IpcMainInvokeEvent) {
-    const dirs = storage.settings.app.fontDirs;
+  private async getClipboardData(event: IpcMainInvokeEvent, formats: string[]) {
+    if (!isFigmaSender(event)) {
+      logger.warn("[security] getClipboardData from untrusted sender:", describeSender(event));
+      return null;
+    }
 
-    return this.fontManager.getFonts(dirs);
+    return readClipboardData(formats);
   }
-  private async getFontFile(_: IpcMainInvokeEvent, data: WebApi.GetFontFile) {
-    const file = await this.fontManager.getFontFile(data.path);
+  private async getFonts(event: IpcMainInvokeEvent) {
+    if (!isTrustedSender(event)) return {};
+
+    return this.fontManager.getFonts(storage.settings.app.fontDirs);
+  }
+  private async getFontFile(event: IpcMainInvokeEvent, data: WebApi.GetFontFile) {
+    if (!isTrustedSender(event)) return null;
+
+    // Only files that the font scan returned may be read (not arbitrary paths).
+    const file = await this.fontManager.getFontFile(data?.path, storage.settings.app.fontDirs);
 
     if (file && file.byteLength > 0) {
       return file;
@@ -168,10 +157,14 @@ export default class App {
     return null;
   }
   private async logout() {
-    await request({
-      url: Const.LOGOUT_PAGE,
-      useSessionCookies: true,
-    });
+    try {
+      await request({
+        url: Const.LOGOUT_PAGE,
+        useSessionCookies: true,
+      });
+    } catch (error) {
+      logger.error("logout request failed:", error);
+    }
 
     // TODO: remove only current user's id
     storage.settings.authedUserIDs = [];
@@ -207,8 +200,9 @@ export default class App {
     ipcMain.on("setAuthedUsers", this.setAuthedUsers.bind(this));
     ipcMain.on("setWorkspaceName", this.setWorkspaceName.bind(this));
     ipcMain.on("setFigjamEnabled", this.setFigjamEnabled.bind(this));
-    ipcMain.on("setClipboardData", this.setClipboardData.bind(this));
 
+    ipcMain.handle("setClipboardData", this.setClipboardData.bind(this));
+    ipcMain.handle("getClipboardData", this.getClipboardData.bind(this));
     ipcMain.handle("getFonts", this.getFonts.bind(this));
     ipcMain.handle("getFontFile", this.getFontFile.bind(this));
 
@@ -218,5 +212,10 @@ export default class App {
     app.on("relaunchApp", this.relaunchApp.bind(this));
     app.on("signOut", this.logout.bind(this));
     app.on("quitApp", this.quitApp.bind(this));
+    app.on("handleFigmaProtocolUrl", this.handleFigmaUrl.bind(this));
+    app.on("before-quit", () => {
+      this.windowManager.saveState();
+      storage.save();
+    });
   };
 }

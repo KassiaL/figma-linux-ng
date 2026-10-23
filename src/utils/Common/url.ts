@@ -1,4 +1,3 @@
-import * as Url from "url";
 import { PROTOCOL, HOMEPAGE } from "Const";
 
 export const isPrototypeUrl = (url: string): boolean =>
@@ -31,14 +30,24 @@ export const normalizeUrl = (url: string): string => {
   return url.replace(replaceRegExp, HOMEPAGE);
 };
 
-export const getParsedUrl = (data: string): Url.UrlWithStringQuery => {
-  let url = data;
+export const getParsedUrl = (data: string): URL | undefined => parseURL(normalizeUrl(data));
 
-  if (isFigmaProtocolUrl(url)) {
-    url = normalizeUrl(url);
-  }
+// Path + query of an url, or "" when it can't be parsed.
+export const urlPath = (url: string): string => {
+  const parsed = parseURL(url);
 
-  return Url.parse(url);
+  return parsed ? `${parsed.pathname}${parsed.search}` : "";
+};
+export const urlPathname = (url: string): string => parseURL(url)?.pathname ?? "";
+
+export const isFigmaHost = (hostname: string): boolean =>
+  hostname === "figma.com" || hostname.endsWith(".figma.com");
+
+// Strict origin check (regexps above only look at the prefix of a string).
+export const isFigmaOrigin = (url: string): boolean => {
+  const parsed = parseURL(url);
+
+  return !!parsed && parsed.protocol === "https:" && isFigmaHost(parsed.hostname);
 };
 
 export const isAppAuthGrandLink = (url: string) => /\/app_auth\/.*\/grant/.test(url);

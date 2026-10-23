@@ -222,7 +222,7 @@ export default class MenuManager {
       enabled,
       visible,
       id,
-      click: (_, window) => app.emit(id, window.id),
+      click: (_, window) => app.emit(id, window?.id),
     };
 
     if (accelerator) {
@@ -345,6 +345,10 @@ export default class MenuManager {
           "Shift+Ctrl+Alt+S",
         ),
         this.item("GPU", "chromeGpu"),
+        { type: "separator" },
+        this.item("Diagnostics (RAM, CPU, GPU, WebGPU)...", "openDiagnostics", "Shift+Ctrl+Alt+D"),
+        this.item("Save Diagnostics Report", "saveDiagnosticsReport"),
+        this.item("Record GPU Trace (10 s)", "recordGpuTrace"),
       ],
     };
   }

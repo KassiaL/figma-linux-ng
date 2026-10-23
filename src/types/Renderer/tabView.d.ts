@@ -4,12 +4,12 @@ declare namespace Types {
     text: string;
     disabled?: boolean;
     itemArgs?: Types.Dic<unknown>;
-    item: ConstructorOfATypedSvelteComponent;
+    item: import("svelte").ComponentType;
   }
 
   interface SetingsTabItem extends TabItem {
-    bodyComponent: ConstructorOfATypedSvelteComponent;
-    headerComponent?: ConstructorOfATypedSvelteComponent;
+    bodyComponent: import("svelte").ComponentType;
+    headerComponent?: import("svelte").ComponentType;
   }
 
   interface ThemeCreatorPopupMenuItem extends TabItem {
