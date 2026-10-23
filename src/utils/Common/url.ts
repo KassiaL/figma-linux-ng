@@ -70,3 +70,24 @@ export const isFigmaBoardLink = (url: string) =>
   /^https:\/\/w{0,3}?.figma.com\/board/.test(url);
 export const isFigmaDesignLink = (url: string) =>
   /^https:\/\/w{0,3}?.figma.com\/design/.test(url);
+
+// "/design/<key>" style identity of a Figma document url, ignoring the file name
+// slug (Figma rewrites it) and query. null for non-document urls.
+export const figmaDocId = (url: string): string | null => {
+  const m = /^\/(file|design|proto|board|jam|slides|deck|site)\/([A-Za-z0-9]+)/.exec(
+    url.startsWith("/") ? url : urlPathname(url),
+  );
+
+  return m ? `${m[1]}/${m[2]}` : null;
+};
+
+// Readable name from a Figma document url ("/design/<key>/My-File" -> "My File").
+export const figmaDocTitle = (url: string): string | undefined => {
+  const m = /^\/(?:file|design|proto|board|jam|slides|deck|site)\/[A-Za-z0-9]+\/([^/?#]+)/.exec(urlPathname(url));
+  if (!m) return undefined;
+  try {
+    return decodeURIComponent(m[1]).replace(/-/g, " ");
+  } catch {
+    return m[1];
+  }
+};

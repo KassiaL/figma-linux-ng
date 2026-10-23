@@ -10,7 +10,7 @@ import {
   NEW_PROJECT_TAB_URL,
   NEW_FILE_TAB_TITLE,
 } from "Const";
-import { isDev, isCommunityUrl, isAppAuthRedeem, normalizeUrl, parseURL, urlPath } from "Utils/Common";
+import { isDev, isCommunityUrl, isAppAuthRedeem, normalizeUrl, parseURL, urlPath, figmaDocId, figmaDocTitle } from "Utils/Common";
 import { panelUrlDev, panelUrlProd, toggleDetachedDevTools } from "Utils/Main";
 import Tab from "./Tab";
 
@@ -24,6 +24,7 @@ export default class Window {
   private state: Types.WindowState;
   private activeView: View | undefined;
   private boundsTimer: NodeJS.Timeout | undefined;
+  private figmaLoading = new Map<number, boolean>();
 
   private _userId: string;
 
@@ -127,9 +128,11 @@ export default class Window {
     const tabs: Types.SavedTab[] = [];
 
     for (const [_, tab] of this.tabs) {
+      const current = tab.getUrl();
       tabs.push({
         title: tab.title,
-        url: tab.url,
+        // current url (Figma rewrites slugs, adds node ids) unless the page never loaded
+        url: current && /^https:/.test(current) ? current : tab.url,
       });
     }
 
@@ -166,8 +169,12 @@ export default class Window {
     const lazy = storage.settings.app.lazyRestoreTabs !== false;
     const activePath = this.state.lastActiveTabPath;
 
+    const activeDoc = activePath ? figmaDocId(activePath) : null;
+    let activeLoaded = false;
+
     for (const saved of tabs) {
-      const isActive = !!activePath && urlPath(saved.url).startsWith(activePath);
+      const isActive: boolean = !activeLoaded && !!activeDoc && figmaDocId(saved.url) === activeDoc;
+      activeLoaded ||= isActive;
       this.addTab(saved.url, saved.title, lazy && !isActive);
     }
 
@@ -333,6 +340,7 @@ export default class Window {
   }
 
   public addTab(url: string, title?: string, lazy = false) {
+    title ??= figmaDocTitle(url);
     const parsedUrl = parseURL(url);
     if (parsedUrl && this._userId) parsedUrl.searchParams.set("fuid", this._userId);
 
@@ -345,6 +353,9 @@ export default class Window {
       url,
       title,
     });
+    if (lazy) {
+      this.window.webContents.send("setLoading", tab.id, false);
+    }
 
     return tab;
   }
@@ -416,7 +427,22 @@ export default class Window {
       return;
     }
 
-    this.window.webContents.send("setLoading", tabId, args.loading);
+    this.figmaLoading.set(tabId, !!args.loading);
+    this.window.webContents.send("setLoading", tabId, !!args.loading);
+  }
+  /** Page finished loading: stop the spinner unless Figma itself still reports loading. */
+  public tabStoppedLoading(tabId: number) {
+    if (this.figmaLoading.get(tabId) === true) {
+      // Figma is streaming the file; it normally reports the end itself. Safety net:
+      setTimeout(() => {
+        if (this.figmaLoading.get(tabId) === true && !this.window.isDestroyed()) {
+          this.figmaLoading.set(tabId, false);
+          this.window.webContents.send("setLoading", tabId, false);
+        }
+      }, 60000);
+      return;
+    }
+    if (!this.window.isDestroyed()) this.window.webContents.send("setLoading", tabId, false);
   }
   public windowMinimize(_: IpcMainEvent) {
     this.window.minimize();

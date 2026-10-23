@@ -17,7 +17,7 @@ const RAW_READ_FORMATS = ["com.adobe.pdf", "com.adobe.xd", "com.bohemiancoding.s
 
 const toBlob = (bytes: Uint8Array, type: string) => new Blob([bytes as Uint8Array<ArrayBuffer>], { type });
 
-export async function writeClipboardData(data: WebApi.SetClipboardData): Promise<void> {
+export async function writeClipboardData(data: WebApi.SetClipboardData): Promise<boolean> {
   const bytes = new Uint8Array(data.data as unknown as ArrayBufferLike);
   let item: Record<string, string | Blob>;
 
@@ -43,10 +43,11 @@ export async function writeClipboardData(data: WebApi.SetClipboardData): Promise
       break;
     default:
       logger.warn("[clipboard] refused to write unsupported format:", data.format);
-      return;
+      return false;
   }
 
   await clipboard.write([new ClipboardItem(item)]);
+  return true;
 }
 
 export interface ClipboardReadResult {

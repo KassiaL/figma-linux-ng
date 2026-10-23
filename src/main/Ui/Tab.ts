@@ -175,5 +175,9 @@ export default class Tab {
     wc.setWindowOpenHandler(figmaWindowOpenHandler);
     wc.on("will-navigate", this.onWillNavigate.bind(this));
     wc.on("dom-ready", this.onDomReady.bind(this));
+    // The panel spinner used to depend only on Figma's setLoading(false): when it never
+    // came (prototypes, failed loads) the spinner animated forever and kept the whole
+    // window redrawing at the display refresh rate.
+    wc.on("did-stop-loading", () => app.emit("tabStoppedLoading", this.windowId, this.id));
   }
 }

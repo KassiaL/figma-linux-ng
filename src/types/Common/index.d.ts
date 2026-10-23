@@ -71,7 +71,7 @@ declare namespace Types {
     switch: string;
     value?: string;
   }
-  type GpuProfile = "vulkan" | "angle-vulkan" | "chromium-default" | "software";
+  type GpuProfile = "vulkan" | "vulkan-swapchain" | "angle-vulkan" | "chromium-default" | "software";
 
   interface SettingsInterface {
     clientId: string;

@@ -1,7 +1,7 @@
 import { app, ipcMain, Rectangle, IpcMainEvent } from "electron";
 
 import { NEW_FILE_TAB_TITLE, RECENT_FILES } from "Const";
-import { urlPathname } from "Utils/Common";
+import { urlPathname, figmaDocId } from "Utils/Common";
 import MainTab from "./MainTab";
 import CommunityTab from "./CommunityTab";
 import Tab from "./Tab";
@@ -216,17 +216,19 @@ export default class TabManager {
     return foundTab;
   }
   public getByPath(path: string) {
-    let foundTab: Tab | undefined;
+    const wanted = figmaDocId(path);
 
-    this.tabs.forEach((tab) => {
-      const pathname = urlPathname(tab.url ?? tab.getUrl());
-      const reg = new RegExp(pathname);
-      if (reg.test(path)) {
-        foundTab = tab;
+    if (!wanted) {
+      return undefined;
+    }
+
+    for (const tab of this.tabs.values()) {
+      if (figmaDocId(tab.getUrl()) === wanted || figmaDocId(tab.url ?? "") === wanted) {
+        return tab;
       }
-    });
+    }
 
-    return foundTab;
+    return undefined;
   }
   public getAll = () => this.tabs;
 

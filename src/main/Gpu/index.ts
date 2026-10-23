@@ -1,17 +1,24 @@
 /**
  * Chromium GPU switches. Applied once, before `app.ready`.
  *
- * Measured with scripts/diag/webgpu-probe on Electron 45 / Chromium 156,
- * Ubuntu 24.04 X11, RTX 4060, driver 580 (see docs/WEBGPU.md):
+ * Measured on Electron 45 / Chromium 156, Ubuntu 24.04 X11, RTX 4060, driver 580
+ * (scripts/diag/webgpu-probe, docs/WEBGPU.md, docs/PERFORMANCE.md):
  *
  *  - no switches                 -> navigator.gpu exists, requestAdapter() === null
  *  - enable-unsafe-webgpu only   -> adapter is SwiftShader (software, isFallbackAdapter)
- *  - enable-features=Vulkan      -> hardware NVIDIA adapter, GPU process stays seccomp-sandboxed
+ *  - enable-features=Vulkan      -> hardware NVIDIA adapter, GPU process stays seccomp-sandboxed.
+ *                                   On X11 Chromium then also composites with Vulkan, and
+ *                                   presenting through the NVIDIA Vulkan swapchain costs a full
+ *                                   CPU core in the GPU process for any animation (even a spinner).
+ *  - + disable-vulkan-surface    -> same hardware WebGPU, frames presented with a blit instead
+ *                                   of the swapchain: idle CPU back to GL levels (~5%).
  *  - + use-angle=vulkan          -> hardware adapter too, but Chromium runs the GPU process
  *                                   without its seccomp sandbox
  *  - VulkanFromANGLE without use-angle=vulkan -> Vulkan init fails, adapter null
  *
- * So the default profile is "vulkan": WebGPU on Dawn/Vulkan, WebGL/compositing on ANGLE/OpenGL.
+ * Chromium's "WebGPU on Vulkan with a GL compositor" path (webgpu_on_vk_via_gl_interop)
+ * is only offered by the Wayland Ozone platform, not X11, so on X11 WebGPU needs the
+ * Vulkan feature.
  */
 import { app } from "electron";
 
@@ -26,7 +33,7 @@ interface Plan {
   warnings: string[];
 }
 
-const PROFILES: Types.GpuProfile[] = ["vulkan", "angle-vulkan", "chromium-default", "software"];
+const PROFILES: Types.GpuProfile[] = ["vulkan", "vulkan-swapchain", "angle-vulkan", "chromium-default", "software"];
 
 const splitList = (value: string | undefined) =>
   (value ?? "")
@@ -39,8 +46,15 @@ export function buildGpuPlan(settings: Types.SettingsInterface["app"]): Plan {
   const profile = PROFILES.includes(requested) ? requested : settings.gpuProfile ?? "vulkan";
   const plan: Plan = { profile, switches: [], enableFeatures: [], disableFeatures: [], warnings: [] };
 
+  const ozone = cliArg("ozone-platform") ?? settings.ozonePlatform;
+  const isX11 = ozone === "x11" || ((!ozone || ozone === "auto") && process.env.XDG_SESSION_TYPE !== "wayland");
+
   switch (profile) {
     case "vulkan":
+      plan.enableFeatures.push("Vulkan");
+      if (isX11) plan.switches.push(["disable-vulkan-surface"]);
+      break;
+    case "vulkan-swapchain":
       plan.enableFeatures.push("Vulkan");
       break;
     case "angle-vulkan":
@@ -64,7 +78,6 @@ export function buildGpuPlan(settings: Types.SettingsInterface["app"]): Plan {
     }
   }
 
-  const ozone = cliArg("ozone-platform") ?? settings.ozonePlatform;
   if (ozone && ozone !== "auto") {
     plan.switches.push(["ozone-platform", ozone]);
   }

@@ -153,6 +153,12 @@ export default class WindowManager {
     this.current?.focus();
   }
   public saveState() {
+    // After the last window closed (quitApp / before-quit) keep the state saved
+    // in windowClose instead of overwriting it with an empty one.
+    if (this.windows.size === 0) {
+      return;
+    }
+
     storage.settings.app.windowsState = {};
 
     for (const [_, window] of this.windows) {
@@ -787,5 +793,6 @@ export default class WindowManager {
     app.on("toggleCurrentTabDevTools", this.toggleCurrentTabDevTools.bind(this));
     app.on("needUpdateMenu", this.needUpdateMenu.bind(this));
     app.on("handleCallbackForTab", this.handleCallbackForTab.bind(this));
+    app.on("tabStoppedLoading", (windowId: number, tabId: number) => this.windows.get(windowId)?.tabStoppedLoading(tabId));
   }
 }

@@ -124,8 +124,7 @@ export default class App {
     }
 
     try {
-      await writeClipboardData(data);
-      return true;
+      return await writeClipboardData(data);
     } catch (error) {
       logger.error("setClipboardData failed:", error);
       return false;
