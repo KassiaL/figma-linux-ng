@@ -1,3 +1,84 @@
+# Figma Linux NG
+
+Современный форк [Figma Linux](https://github.com/Figma-Linux/figma-linux): Electron 45,
+аппаратный WebGPU на Linux (Vulkan), меньше нагрузки на CPU, встроенная диагностика.
+Устанавливается рядом со старым клиентом и с ним не конфликтует.
+
+*A modernized fork of Figma Linux: Electron 45 (Chromium 156), hardware WebGPU on Linux/Vulkan,
+sandboxed web content, lower idle CPU, built-in diagnostics. Installs side by side with Figma Linux.*
+
+## Чем отличается от оригинала
+
+| | Figma Linux 0.11.4 | Figma Linux NG |
+|---|---|---|
+| Electron / Chromium | 30 / 124 | **45.0.0 / 156** |
+| WebGPU | `navigator.gpu` есть, адаптер `null` | **аппаратный адаптер NVIDIA через Vulkan**, GPU sandbox включён |
+| Безопасность веб-контента Figma | без изоляции контекста; в окне Node.js и `webSecurity: false` | `contextIsolation` + `sandbox`, без Node.js; IPC принимается только от figma.com |
+| CPU при анимации/панорамировании (NVIDIA, X11) | GPU-процесс съедает целое ядро | в ~3 раза меньше (вывод кадров blit вместо Vulkan-swapchain) |
+| Вечный спиннер вкладки | перерисовывал окно постоянно | исправлено |
+| Восстановление вкладок при запуске | загружаются все сразу (≈0,6 ГБ на файл) | только активная, остальные при клике |
+| Утечки при закрытии вкладок/окон | процессы вкладок и обработчики оставались | освобождаются |
+| Шрифты | синхронный `find` и разбор всех шрифтов на каждый запрос | асинхронно, с кэшем |
+| Буфер обмена | старый API (удалён в Electron 44) | новый async-API Electron 45 |
+| Вход | только через `figma://` в системе | встроенное окно входа, `figma://` у старого клиента не отбирается |
+| Данные | `~/.config/figma-linux` | отдельно: `~/.config/figma-linux-ng`, кэш в `~/.cache/figma-linux-ng` |
+| Диагностика | — | *Help → Diagnostics*: RAM/CPU по процессам, GPU/VRAM, WebGPU, чем рисует Figma, время загрузки, ошибки сети |
+| Font Agent (Windows, Wine) | — | User-Agent Windows для figma.com (включён по умолчанию, отключается в настройках) |
+
+Чего форк **не** обещает: заметного снижения памяти самого редактора (0,5–0,7 ГБ на открытый
+файл — это веб-приложение Figma) и WebGPU в редакторе Figma по умолчанию. Figma сама решает,
+чем рисовать: на Linux выбирает WebGL, с UA Windows — по своему серверному флагу для аккаунта.
+Подробности: [docs/WEBGPU.md](docs/WEBGPU.md).
+
+## Установка и запуск
+
+Собрать и установить DEB:
+
+```bash
+npm ci && npm run package
+```
+
+```bash
+sudo apt install ./build/installers/figma-linux-ng_0.12.0-ng.1_amd64.deb
+```
+
+Запуск: «Figma Linux NG» в меню приложений или `figma-linux-ng`.
+
+AppImage без установки:
+
+```bash
+./build/installers/figma-linux-ng_0.12.0-ng.1_x86_64.AppImage
+```
+
+Из исходников без упаковки:
+
+```bash
+npm ci && npm start
+```
+
+Полезные флаги:
+
+| Флаг | Что делает |
+|---|---|
+| `--webgpu-diag` | счётчики WebGPU/WebGL во вкладках (видно в *Help → Diagnostics*) |
+| `--gpu-profile=vulkan\|vulkan-swapchain\|angle-vulkan\|chromium-default\|software` | GPU-профиль на один запуск |
+| `--user-agent-os=windows\|linux` | User-Agent на один запуск |
+| `--diag-report=FILE --diag-delay=SEC --diag-exit` | записать JSON-отчёт и выйти |
+| `--profile-dir=DIR` | отдельный профиль (для тестов) |
+| `--register-protocol` | сделать NG обработчиком `figma://` (по умолчанию не трогаем) |
+
+Настройки: окно Settings → General → блоки «Graphics» и «Figma Linux NG».
+
+## Документация
+
+- [docs/WEBGPU.md](docs/WEBGPU.md) — флаги Chromium, sandbox, как Figma выбирает WebGPU/WebGL, результаты
+- [docs/PERFORMANCE.md](docs/PERFORMANCE.md) — замеры и сравнение с оригиналом
+- [docs/TESTING.md](docs/TESTING.md) — что проверено и как проверить вручную
+
+---
+
+# Upstream README
+
 # <img src="https://raw.githubusercontent.com/ChugunovRoman/figma-linux/master/resources/icons/128x128.png" width="32"> Figma electron app (unofficial)
 
 

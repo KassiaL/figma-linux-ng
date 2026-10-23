@@ -76,7 +76,7 @@ async function refresh() {
   const fs = Object.entries(g.featureStatus).map(([k, v]) => [k, cls(v, /^enabled/.test(v) ? "ok" : /software|unavailable/.test(v) ? "bad" : "muted")]);
   $("gpu").innerHTML =
     `<p>Profile: <b>${esc(g.plan?.profile)}</b> · switches: <code>${esc(JSON.stringify(g.plan?.switches))}</code> · enable-features: <code>${esc(g.plan?.enableFeatures?.join(","))}</code></p>` +
-    `<p>GPU process sandboxed: <b class="${g.gpuProcessSandboxed ? "ok" : "bad"}">${esc(g.gpuProcessSandboxed)}</b> · Skia backend: ${esc(g.skiaBackend)} · GL: ${esc(g.glImplementation)}</p>` +
+    `<p>GPU process sandboxed: <b class="${g.gpuProcessSandboxed ? "ok" : "bad"}">${esc(g.gpuProcessSandboxed)}</b> · Vulkan-capable GPU: ${esc(g.hardwareSupportsVulkan)} · details: chrome://gpu (Help → GPU)</p>` +
     (n ? `<p>${esc(n.name)} · driver ${esc(n.driver)} · GPU ${n.utilizationGpuPercent}% · VRAM ${n.memoryUsedMB}/${n.memoryTotalMB} MB · ${n.temperatureC}°C · ${n.powerW} W</p>` +
       (n.thisAppProcesses.length ? table(["PID", "Type", "VRAM MB"], n.thisAppProcesses.map((p) => [p.pid, p.type, p.vramMB])) : "") : `<p class="muted">nvidia-smi not available</p>`) +
     table(["Feature", "Status"], fs);

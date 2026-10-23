@@ -27,7 +27,8 @@
     "package:deb": "rm -rf build/installers && npm run build && electron-builder --config=config/builder.json -l deb",
     "package:appimage": "rm -rf build/installers && npm run build && electron-builder --config=config/builder.json -l AppImage",
     "diag:webgpu": "node scripts/diag/run-webgpu-probe.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start:test": "electron dist --profile-dir=/tmp/figma-linux-ng-test --webgpu-diag"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",

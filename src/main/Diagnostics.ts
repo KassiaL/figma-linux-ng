@@ -323,9 +323,7 @@ export default class Diagnostics {
         // From the kernel (seccomp mode of the GPU process). getGPUInfo("basic").sandboxed is
         // collected before the GPU sandbox starts and stays false; chrome://gpu shows the real value.
         gpuProcessSandboxed: this.seccomp(app.getAppMetrics().find((m) => m.type === "GPU")?.pid ?? -1),
-        skiaBackend: gpuBasic?.auxAttributes?.skiaBackendType,
         hardwareSupportsVulkan: gpuBasic?.auxAttributes?.hardwareSupportsVulkan,
-        glImplementation: gpuBasic?.auxAttributes?.glImplementationParts,
         devices: gpuBasic?.gpuDevice,
         nvidia: await this.nvidia(),
       },
