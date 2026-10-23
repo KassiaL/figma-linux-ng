@@ -76,7 +76,7 @@ async function refresh() {
   const fs = Object.entries(g.featureStatus).map(([k, v]) => [k, cls(v, /^enabled/.test(v) ? "ok" : /software|unavailable/.test(v) ? "bad" : "muted")]);
   $("gpu").innerHTML =
     `<p>Profile: <b>${esc(g.plan?.profile)}</b> · switches: <code>${esc(JSON.stringify(g.plan?.switches))}</code> · enable-features: <code>${esc(g.plan?.enableFeatures?.join(","))}</code></p>` +
-    `<p>GL renderer: ${esc(g.glRenderer)}</p>` +
+    `<p>GPU process sandboxed: <b class="${g.gpuProcessSandboxed ? "ok" : "bad"}">${esc(g.gpuProcessSandboxed)}</b> · Skia backend: ${esc(g.skiaBackend)} · GL: ${esc(g.glImplementation)}</p>` +
     (n ? `<p>${esc(n.name)} · driver ${esc(n.driver)} · GPU ${n.utilizationGpuPercent}% · VRAM ${n.memoryUsedMB}/${n.memoryTotalMB} MB · ${n.temperatureC}°C · ${n.powerW} W</p>` +
       (n.thisAppProcesses.length ? table(["PID", "Type", "VRAM MB"], n.thisAppProcesses.map((p) => [p.pid, p.type, p.vramMB])) : "") : `<p class="muted">nvidia-smi not available</p>`) +
     table(["Feature", "Status"], fs);
@@ -110,6 +110,9 @@ async function selfTest() {
     const adapter = await navigator.gpu?.requestAdapter({ powerPreference: "high-performance" });
     if (!adapter) throw new Error("requestAdapter() returned null");
     const i = adapter.info || {};
+    const gl = document.createElement("canvas").getContext("webgl2");
+    const dbg = gl && gl.getExtension("WEBGL_debug_renderer_info");
+    r.webglRenderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : undefined;
     Object.assign(r, { vendor: i.vendor, architecture: i.architecture, description: i.description, isFallbackAdapter: i.isFallbackAdapter, features: adapter.features.size });
     const device = await adapter.requestDevice();
     r.device = true;

@@ -1,79 +1,42 @@
 {
-  "appId": "figma-linux",
-  "productName": "figma-linux",
-  "extraMetadata": "main/main.js",
+  "appId": "io.github.figma-linux-ng",
+  "productName": "Figma Linux NG",
+  "executableName": "figma-linux-ng",
   "icon": "resources/icons",
-  "extraFiles": [
-    {
-      "from": "lib/"
-    }
-  ],
-  "files": [
-    "**/*"
-  ],
+  "files": ["**/*", "!**/*.map"],
   "directories": {
     "app": "dist/",
     "buildResources": "build/installers",
     "output": "build/installers"
   },
-  "fileAssociations": [
-    {
-      "ext": "fig",
-      "name": "Figma File",
-      "role": "Editor"
-    }
-  ],
-  "protocols": [
-    {
-      "name": "figma",
-      "role": "Viewer",
-      "schemes": [
-        "figma"
-      ]
-    }
-  ],
-  "rpm": {
-    "fpm": [
-      "--rpm-rpmbuild-define=_build_id_links none"
-    ]
-  },
-  "pacman": {
-    "depends": []
-  },
-  "appImage": {
-    "category": "Graphics",
-    "desktop": "resources/figma-linux-appimage.desktop"
-  },
+  "electronVersion": "45.0.0",
+  "asar": true,
   "linux": {
-    "description": "Unofficial desktop application for linux",
+    "description": "Figma Linux NG: Figma desktop client for Linux on Electron 45 with hardware WebGPU (Vulkan)",
     "icon": "resources/icons",
     "category": "Graphics",
-    "packageCategory": "Graphics",
-    "maintainer": "Chugunov Roman <Zebs-BMK@yandex.ru>",
-    "artifactName": "${name}_${version}_${platform}_${arch}.${ext}",
-    "fileAssociations": [
-      {
-        "ext": "fig",
-        "name": "Figma File",
-        "role": "Editor"
+    "packageCategory": "graphics",
+    "maintainer": "Figma Linux NG contributors",
+    "synopsis": "Unofficial Figma desktop client (modernized fork of Figma Linux)",
+    "artifactName": "figma-linux-ng_${version}_${arch}.${ext}",
+    "executableArgs": [],
+    "desktop": {
+      "entry": {
+        "Name": "Figma Linux NG",
+        "Comment": "Unofficial Figma desktop client (Electron 45, WebGPU)",
+        "StartupWMClass": "figma-linux-ng",
+        "Categories": "Graphics;"
       }
-    ],
+    },
     "target": [
-      {
-        "target": "deb"
-      },
-      {
-        "target": "zip"
-      },
-      {
-        "target": "rpm"
-      },
-      {
-        "target": "pacman"
-      },
-      {
-        "target": "appimage"
-      }
+      { "target": "deb" },
+      { "target": "AppImage" }
     ]
+  },
+  "deb": {
+    "depends": ["libgtk-3-0", "libnotify4", "libnss3", "libxss1", "libxtst6", "xdg-utils", "libatspi2.0-0", "libuuid1", "libsecret-1-0", "libvulkan1"]
+  },
+  "appImage": {
+    "artifactName": "figma-linux-ng_${version}_${arch}.AppImage"
   }
 }

@@ -11,5 +11,6 @@
     "adm-zip": "^0.5.16",
     "chokidar": "^3.6.0"
   },
-  "productName": "Figma Linux NG"
+  "productName": "Figma Linux NG",
+  "desktopName": "figma-linux-ng.desktop"
 }

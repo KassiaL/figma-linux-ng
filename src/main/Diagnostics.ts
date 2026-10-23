@@ -110,7 +110,8 @@ export default class Diagnostics {
     const ses = session.defaultSession;
 
     ses.webRequest.onErrorOccurred((d) => {
-      if (d.error === "net::ERR_ABORTED") return; // navigations/cancelled fetches, not failures
+      // cancelled requests and only-if-cached probes are not failures
+      if (d.error === "net::ERR_ABORTED" || d.error === "net::ERR_CACHE_MISS") return;
       this.pushNetError({ at: Date.now(), url: d.url, error: d.error, resourceType: d.resourceType });
     });
     ses.webRequest.onCompleted((d) => {
@@ -219,9 +220,19 @@ export default class Diagnostics {
       workingSetMB: mb(m.memory.workingSetSize),
       peakWorkingSetMB: mb(m.memory.peakWorkingSetSize),
       privateMB: m.memory.privateBytes !== undefined ? mb(m.memory.privateBytes) : undefined,
-      sandboxed: m.sandboxed,
+      // ProcessMetric.sandboxed is macOS/Windows only; on Linux use the seccomp mode.
+      sandboxed: m.sandboxed ?? this.seccomp(m.pid),
       webContents: owners.get(m.pid) ?? [],
     }));
+  }
+
+  private seccomp(pid: number): boolean | undefined {
+    try {
+      const mode = /Seccomp:\s+(\d)/.exec(fs.readFileSync(`/proc/${pid}/status`, "utf8"))?.[1];
+      return mode === undefined ? undefined : mode === "2";
+    } catch {
+      return undefined;
+    }
   }
 
   private async nvidia() {
@@ -309,7 +320,11 @@ export default class Diagnostics {
       gpu: {
         plan: appliedGpuPlan,
         featureStatus: app.getGPUFeatureStatus(),
-        glRenderer: gpuBasic?.auxAttributes?.glRenderer,
+        // From the kernel (seccomp mode of the GPU process). getGPUInfo("basic").sandboxed is
+        // collected before the GPU sandbox starts and stays false; chrome://gpu shows the real value.
+        gpuProcessSandboxed: this.seccomp(app.getAppMetrics().find((m) => m.type === "GPU")?.pid ?? -1),
+        skiaBackend: gpuBasic?.auxAttributes?.skiaBackendType,
+        hardwareSupportsVulkan: gpuBasic?.auxAttributes?.hardwareSupportsVulkan,
         glImplementation: gpuBasic?.auxAttributes?.glImplementationParts,
         devices: gpuBasic?.gpuDevice,
         nvidia: await this.nvidia(),
@@ -329,11 +344,14 @@ export default class Diagnostics {
   /** What the counters actually show; "unknown" without instrumentation data. */
   private verdict(s: any): string {
     if (!s) return this.instrumentation ? "no data yet" : "instrumentation disabled";
-    const webgpuActive = s.webgpuSubmits > 0 && s.webgpuGetCurrentTexture > 0;
-    const webglActive = s.webglDrawCalls > 0;
+    // Figma's WebGPU compatibility probe draws a few frames into tiny offscreen canvases;
+    // that is not editor rendering. Editor rendering = a large on-page canvas + many submits.
+    const editorWebgpuCanvas = (s.canvases ?? []).some((c: any) => c.type === "webgpu" && !c.offscreen && c.width >= 300);
+    const webgpuActive = editorWebgpuCanvas && s.webgpuSubmits > 10 && s.webgpuGetCurrentTexture > 0;
+    const webglActive = s.webglDrawCalls > 50;
     if (webgpuActive && !webglActive) return "WebGPU (submits + canvas frames, no WebGL draws)";
     if (webglActive && !webgpuActive) {
-      return s.adapters?.length ? "WebGL (WebGPU adapter was obtained but not used for drawing)" : "WebGL";
+      return s.adapters?.length ? "WebGL (Figma only probed WebGPU, draws with WebGL)" : "WebGL";
     }
     if (webgpuActive && webglActive) return "mixed (both WebGPU frames and WebGL draws)";
     if (s.transferControlToOffscreen > 0) return "rendering moved to a worker (OffscreenCanvas): not visible to main-thread counters";

@@ -85,6 +85,18 @@
     }
   }
 
+  const gpuProfiles: Array<{ id: Types.GpuProfile; text: string }> = [
+    { id: "vulkan", text: "Vulkan + WebGPU (recommended)" },
+    { id: "vulkan-swapchain", text: "Vulkan + WebGPU, swapchain present (higher CPU on NVIDIA/X11)" },
+    { id: "angle-vulkan", text: "ANGLE on Vulkan (GPU process sandbox off)" },
+    { id: "chromium-default", text: "Chromium default: OpenGL, no WebGPU on X11" },
+    { id: "software", text: "Software rendering (troubleshooting)" },
+  ];
+  // userAgentOS is "windows" | "linux"; shown as a switch.
+  function onUserAgentChange(event: Event) {
+    $settings.app.userAgentOS = (event.target as HTMLInputElement).checked ? "windows" : "linux";
+  }
+
   $: {
     ipcRenderer.invoke("updateFigmaUiScale", $settings.ui.scaleFigmaUI);
   }
@@ -153,6 +165,35 @@
 
   <Flex>
     <Flex der="column" width="-webkit-fill-available">
+      <Label>Graphics (restart required)</Label>
+      <select class="ng-select" bind:value={$settings.app.gpuProfile}>
+        {#each gpuProfiles as profile}
+          <option value={profile.id}>{profile.text}</option>
+        {/each}
+      </select>
+      <CheckBox
+        bind:checked={$settings.app.webgpuInstrumentation}
+        text="Count WebGPU/WebGL calls in Figma tabs (Help → Diagnostics)"
+      />
+    </Flex>
+    <Flex width="120px" />
+    <Flex der="column" width="-webkit-fill-available">
+      <Label>Figma Linux NG</Label>
+      <CheckBox
+        checked={$settings.app.userAgentOS !== "linux"}
+        on:change={onUserAgentChange}
+        text="Windows user agent for figma.com (Font Agent via Wine)"
+      />
+      <CheckBox bind:checked={$settings.app.lazyRestoreTabs} text="Load restored tabs when first opened" />
+    </Flex>
+  </Flex>
+
+  <Flex height="50px" />
+  <Line />
+  <Flex height="40px" />
+
+  <Flex>
+    <Flex der="column" width="-webkit-fill-available">
       <Label>Font directories</Label>
       <ListBox {items} {onItemRemoveClick} height="160px" />
       <Flex height="10px" />
@@ -179,6 +220,15 @@
 </div>
 
 <style>
+  .ng-select {
+    margin: 4px 0 12px;
+    padding: 6px 8px;
+    color: var(--text);
+    background-color: var(--bg-panel);
+    border: 1px solid var(--borders);
+    border-radius: 2px;
+    font-size: 12px;
+  }
   div {
     position: absolute;
     background-color: var(--bg-panel);
