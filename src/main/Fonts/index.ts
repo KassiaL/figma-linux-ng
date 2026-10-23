@@ -1,18 +1,20 @@
-import { readFile, readdir, stat } from "fs/promises";
+import { readFile, readdir, realpath, stat } from "fs/promises";
+import { homedir } from "os";
 import { join, resolve } from "path";
 import { logger } from "Main/Logger";
-import TTF from "./TTF";
-import TTC from "./TTC";
+import { parseFontFile, FigmaFontEntry } from "./FontParser";
 
 interface CachedFont {
   mtimeMs: number;
   size: number;
-  items: Fonts.IFontsFigmaItem[] | null; // null: file could not be parsed
+  items: FigmaFontEntry[] | null; // null: file could not be parsed
 }
 
-// Same patterns the previous `find -name "*.?tf" / "*.ttc"` used.
-const TTF_RE = /\.[^./]tf$/;
-const TTC_RE = /\.ttc$/;
+export type FontList = Record<string, FigmaFontEntry[]>;
+
+// TrueType/OpenType files and collections; Windows fonts often use upper-case extensions.
+const FONT_RE = /\.(ttf|otf|ttc|otc)$/i;
+const HOME = homedir();
 
 /**
  * Local fonts for Figma's desktop font API.
@@ -26,9 +28,9 @@ const TTC_RE = /\.ttc$/;
 export default class FontManager {
   private cache = new Map<string, CachedFont>();
   private knownFiles = new Set<string>();
-  private pending: Promise<Fonts.IFonts> | null = null;
+  private pending: Promise<FontList> | null = null;
 
-  public getFonts = (dirs: Array<string>): Promise<Fonts.IFonts> => {
+  public getFonts = (dirs: Array<string>): Promise<FontList> => {
     if (!this.pending) {
       this.pending = this.scan(dirs).finally(() => {
         this.pending = null;
@@ -54,16 +56,18 @@ export default class FontManager {
 
     if (this.knownFiles.has(full)) return true;
 
-    return (
-      (TTF_RE.test(full) || TTC_RE.test(full)) &&
-      dirs.some((dir) => full.startsWith(resolve(dir) + "/"))
-    );
+    return FONT_RE.test(full) && dirs.some((dir) => full.startsWith(resolve(dir) + "/"));
   }
 
-  private async scan(dirs: Array<string>): Promise<Fonts.IFonts> {
+  private async scan(dirs: Array<string>): Promise<FontList> {
     const started = Date.now();
-    const files = (await Promise.all(dirs.map((dir) => this.walk(dir)))).flat();
-    const fontList: Fonts.IFonts = {};
+    const seenDirs = new Set<string>();
+    const seenFiles = new Set<string>();
+    const files: string[] = [];
+    for (const dir of dirs) {
+      await this.walk(dir, seenDirs, seenFiles, files);
+    }
+    const fontList: FontList = {};
     let parsed = 0;
 
     this.knownFiles = new Set(files);
@@ -78,7 +82,9 @@ export default class FontManager {
 
       let entry = this.cache.get(path);
       if (!entry || entry.mtimeMs !== info.mtimeMs || entry.size !== info.size) {
-        entry = { mtimeMs: info.mtimeMs, size: info.size, items: await this.parse(path) };
+        const items = await this.parse(path);
+        const extra = { modified_at: Math.floor(info.mtimeMs / 1000), user_installed: path.startsWith(HOME + "/") };
+        entry = { mtimeMs: info.mtimeMs, size: info.size, items: items && items.map((i) => ({ ...i, ...extra })) };
         this.cache.set(path, entry);
         parsed++;
       }
@@ -91,40 +97,70 @@ export default class FontManager {
       if (!this.knownFiles.has(path)) this.cache.delete(path);
     }
 
-    logger.debug(`[fonts] ${files.length} files, ${parsed} parsed, ${Date.now() - started} ms`);
+    const faces = Object.values(fontList).reduce((n, items) => n + items.length, 0);
+    const families = new Set(Object.values(fontList).flatMap((items) => items.map((i) => i.family))).size;
+    logger.info(`[fonts] ${files.length} files, ${faces} faces, ${families} families (${parsed} parsed) in ${Date.now() - started} ms`);
 
     return fontList;
   }
 
-  private async parse(path: string): Promise<Fonts.IFontsFigmaItem[] | null> {
+  private async parse(path: string): Promise<FigmaFontEntry[] | null> {
     try {
-      const buffer = await readFile(path);
+      const items = parseFontFile(await readFile(path));
 
-      return TTC_RE.test(path) ? new TTC(buffer).getData() : [new TTF(buffer).getData()];
+      return items.length ? items : null;
     } catch (error) {
       logger.warn(`skip font: ${path}, error: `, error?.message);
       return null;
     }
   }
 
-  private async walk(dir: string): Promise<string[]> {
+  /**
+   * Recursive scan that follows symlinks (Ubuntu ships e.g. Ubuntu-BI.ttf as a link;
+   * the old `find -type f` skipped those), guards against directory loops and keeps
+   * one path per real file.
+   */
+  private async walk(dir: string, seenDirs: Set<string>, seenFiles: Set<string>, out: string[]): Promise<void> {
+    let real: string;
     let entries;
     try {
+      real = await realpath(dir);
+      if (seenDirs.has(real)) return;
+      seenDirs.add(real);
       entries = await readdir(dir, { withFileTypes: true });
     } catch {
-      return [];
+      return;
     }
-
-    const result: string[] = [];
-    const nested: Promise<string[]>[] = [];
 
     for (const entry of entries) {
       const full = resolve(join(dir, entry.name));
+      let isDir = entry.isDirectory();
+      let isFile = entry.isFile();
 
-      if (entry.isDirectory()) nested.push(this.walk(full));
-      else if (entry.isFile() && (TTF_RE.test(entry.name) || TTC_RE.test(entry.name))) result.push(full);
+      if (entry.isSymbolicLink()) {
+        try {
+          const target = await stat(full);
+          isDir = target.isDirectory();
+          isFile = target.isFile();
+        } catch {
+          continue; // dangling link
+        }
+      }
+
+      if (isDir) {
+        await this.walk(full, seenDirs, seenFiles, out);
+      } else if (isFile && FONT_RE.test(entry.name)) {
+        let realFile = full;
+        try {
+          realFile = await realpath(full);
+        } catch {
+          continue;
+        }
+        if (!seenFiles.has(realFile)) {
+          seenFiles.add(realFile);
+          out.push(full);
+        }
+      }
     }
-
-    return result.concat(...(await Promise.all(nested)));
   }
 }

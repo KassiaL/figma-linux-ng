@@ -402,14 +402,14 @@ const publicAPI: any = {
     return { data: fonts };
   },
 
-  async getModifiedFonts(args: WebApi.GetFonts) {
-    const fonts = await E.ipcRenderer.invoke("getFonts");
-    return { data: fonts };
+  // Same answers the Figma Font Agent gives (null = no incremental update). They used
+  // to return the whole font list, which Figma treated as a timestamp/diff.
+  async getModifiedFonts() {
+    return { data: null as null };
   },
 
-  async getFontsModifiedAt(args: WebApi.GetFonts) {
-    const fonts = await E.ipcRenderer.invoke("getFonts");
-    return { data: fonts };
+  async getFontsModifiedAt() {
+    return { data: null as null };
   },
 
   async getFontFile(args: WebApi.GetFontFile) {
