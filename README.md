@@ -1,11 +1,17 @@
 # Figma Linux NG
 
-Современный форк [Figma Linux](https://github.com/Figma-Linux/figma-linux): Electron 45,
-аппаратный WebGPU на Linux (Vulkan), меньше нагрузки на CPU, встроенная диагностика.
-Устанавливается рядом со старым клиентом и с ним не конфликтует.
+Неофициальный десктоп-клиент Figma для Linux: Electron 45, аппаратный WebGPU (Vulkan), меньше
+нагрузки на CPU, встроенные локальные шрифты без Figma Font Agent, встроенная диагностика.
 
-*A modernized fork of Figma Linux: Electron 45 (Chromium 156), hardware WebGPU on Linux/Vulkan,
-sandboxed web content, lower idle CPU, built-in diagnostics. Installs side by side with Figma Linux.*
+Самостоятельный проект на основе [Figma Linux](https://github.com/Figma-Linux/figma-linux)
+(GPL-2.0, история коммитов оригинала сохранена). Изменения из оригинала не подтягиваются.
+Ставится рядом со старым клиентом и с ним не конфликтует (свой ID, профиль и кэш).
+
+*Unofficial Figma desktop client for Linux: Electron 45 (Chromium 156), hardware WebGPU on
+Linux/Vulkan, sandboxed web content, lower idle CPU, built-in local fonts (no Figma Font Agent
+needed), built-in diagnostics. An independent project based on Figma Linux.*
+
+**Скачать:** [последний релиз (.deb)](https://github.com/KassiaL/figma-linux-ng/releases/latest)
 
 ## Чем отличается от оригинала
 
@@ -20,7 +26,7 @@ sandboxed web content, lower idle CPU, built-in diagnostics. Installs side by si
 | Утечки при закрытии вкладок/окон | процессы вкладок и обработчики оставались | освобождаются |
 | Шрифты | неверные имена семейств (каждое начертание — отдельное «семейство»), ссылки и вариативные шрифты пропускались, синхронный `find` на каждый запрос | собственный сканер, выдача совпадает с Figma Font Agent (2615/2615 файлов), агент не нужен; асинхронно, с кэшем |
 | Буфер обмена | старый API (удалён в Electron 44) | новый async-API Electron 45 |
-| Вход | только через `figma://` в системе | встроенное окно входа, `figma://` у старого клиента не отбирается |
+| Вход | только через `figma://` в системе | встроенное окно входа; пакет регистрирует `figma://`-ссылки |
 | Данные | `~/.config/figma-linux` | отдельно: `~/.config/figma-linux-ng`, кэш в `~/.cache/figma-linux-ng` |
 | Диагностика | — | *Help → Diagnostics*: RAM/CPU по процессам, GPU/VRAM, WebGPU, чем рисует Figma, время загрузки, ошибки сети |
 | Font Agent | — | не нужен: Figma получает шрифты от клиента (запросы к агенту блокируются; в настройках можно вернуть агент) |
@@ -32,7 +38,14 @@ sandboxed web content, lower idle CPU, built-in diagnostics. Installs side by si
 
 ## Установка и запуск
 
-Собрать и установить DEB:
+Скачайте `.deb` со [страницы релизов](https://github.com/KassiaL/figma-linux-ng/releases/latest)
+и установите:
+
+```bash
+sudo apt install ./figma-linux-ng_0.12.0-ng.1_amd64.deb
+```
+
+Собрать и установить DEB из исходников:
 
 ```bash
 npm ci && npm run package
@@ -65,7 +78,7 @@ npm ci && npm start
 | `--user-agent-os=windows\|linux` | User-Agent на один запуск |
 | `--diag-report=FILE --diag-delay=SEC --diag-exit` | записать JSON-отчёт и выйти |
 | `--profile-dir=DIR` | отдельный профиль (для тестов) |
-| `--register-protocol` | сделать NG обработчиком `figma://` (по умолчанию не трогаем) |
+| `--register-protocol` | вход через системный браузер с возвратом по `figma://` (по умолчанию — встроенное окно входа) |
 
 Настройки: окно Settings → General → блоки «Graphics» и «Figma Linux NG».
 
@@ -77,7 +90,7 @@ npm ci && npm start
 
 ---
 
-# Upstream README
+# README оригинального Figma Linux (для справки)
 
 # <img src="https://raw.githubusercontent.com/ChugunovRoman/figma-linux/master/resources/icons/128x128.png" width="32"> Figma electron app (unofficial)
 

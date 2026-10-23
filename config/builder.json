@@ -11,15 +11,17 @@
   },
   "electronVersion": "45.0.0",
   "asar": true,
+  "publish": null,
   "linux": {
     "description": "Figma Linux NG: Figma desktop client for Linux on Electron 45 with hardware WebGPU (Vulkan)",
     "icon": "resources/icons",
     "category": "Graphics",
     "packageCategory": "graphics",
     "maintainer": "Figma Linux NG contributors",
-    "synopsis": "Unofficial Figma desktop client (modernized fork of Figma Linux)",
+    "synopsis": "Unofficial Figma desktop client for Linux (based on Figma Linux)",
     "artifactName": "figma-linux-ng_${version}_${arch}.${ext}",
     "executableArgs": [],
+    "mimeTypes": ["x-scheme-handler/figma"],
     "desktop": {
       "entry": {
         "Name": "Figma Linux NG",

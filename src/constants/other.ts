@@ -45,7 +45,7 @@ export const LINKS = {
   FIGMA_LINUX_COMMUNITY_FORUM: "https://spectrum.chat/figma-linux",
   FIGMA_LINUX_TELEGRAM: "https://t.me/figma_linux",
   VIDEO_TUTORIALS: "https://www.youtube.com/figmadesign",
-  RELEASE_NOTES: "https://github.com/Figma-Linux/figma-linux/releases/latest",
+  RELEASE_NOTES: "https://github.com/KassiaL/figma-linux-ng/releases/latest",
   LEGAL_SUMMARY: `${HOMEPAGE}/summary-of-policy`,
   THEMES_REPO: "https://github.com/Figma-Linux/figma-linux-themes",
 };
