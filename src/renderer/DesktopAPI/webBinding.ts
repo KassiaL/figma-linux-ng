@@ -444,6 +444,31 @@ const publicAPI: any = {
   },
 };
 
+const PLUGIN_CLIPBOARD_WRITE = "figma-linux:clipboard-write-text";
+const PLUGIN_CLIPBOARD_MAX_LENGTH = 1_000_000;
+
+/**
+ * Plugin UIs run in an insecure data: frame with no navigator.clipboard, and
+ * execCommand("copy") needs a click inside that frame, so plugins that copy right
+ * after start (as they did under Electron 30 without web security) get nothing.
+ * They may post `{ type: PLUGIN_CLIPBOARD_WRITE, id, text }` to `top`; plain text only.
+ */
+const onPluginClipboardMessage = (event: MessageEvent) => {
+  const msg = event.data;
+
+  if (msg?.type !== PLUGIN_CLIPBOARD_WRITE || event.source === window || event.origin !== "null") return;
+  if (typeof msg.text !== "string" || msg.text.length > PLUGIN_CLIPBOARD_MAX_LENGTH) return;
+
+  const data = new TextEncoder().encode(msg.text);
+  const source = event.source as WindowProxy | null;
+  const reply = (ok: boolean) => source?.postMessage({ type: `${PLUGIN_CLIPBOARD_WRITE}:result`, id: msg.id, ok }, "*");
+
+  E.ipcRenderer
+    .invoke("setClipboardData", { format: "text/plain", data })
+    .then((ok: boolean) => reply(!!ok))
+    .catch(() => reply(false));
+};
+
 const init = (fileBrowser: boolean): void => {
   // The first "init" from the page itself carries the port. The old `{ once: true }`
   // dropped the listener on any earlier unrelated message and lost the bridge.
@@ -457,6 +482,7 @@ const init = (fileBrowser: boolean): void => {
     webPort.onmessage = onWebMessage;
   };
   window.addEventListener("message", onInit);
+  window.addEventListener("message", onPluginClipboardMessage);
 
   const initWebOptions: IntiApiOptions = {
     version: API_VERSION,
